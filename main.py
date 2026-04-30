@@ -29,6 +29,28 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # ---------- AI ANALYSE ----------
 def analyze_image_with_ai(image_bytes):
     try:
+        prompt = "Beskriv produkt og giv realistisk pris som JSON"
+
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(prompt),
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/jpeg"
+                    )
+                ]
+            )
+        )
+
+        return response.text
+
+    except Exception as e:
+        print("AI FEJL:", str(e))
+        return '{"name": "ukendt", "price": 0}'
+    try:
         prompt = """
 Analyser billedet.
 
