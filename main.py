@@ -26,7 +26,7 @@ if not GEMINI_API_KEY:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 
-# ---------- AI ANALYSE ----------
+# ---------- AI ----------
 def analyze_image_with_ai(image_bytes):
     try:
         prompt = """
@@ -34,13 +34,13 @@ Analyser billedet og vurder en realistisk brugtpris i Danmark.
 
 Svar KUN i JSON:
 {
-  "name": "kort navn (1-3 ord)",
+  "name": "kort navn",
   "price": tal
 }
 """
 
         response = client.models.generate_content(
-            model="gemini-1.0-pro-vision",  # 🔥 virker med v1beta
+            model="gemini-1.5-flash",
             contents=types.Content(
                 role="user",
                 parts=[
@@ -53,18 +53,25 @@ Svar KUN i JSON:
             )
         )
 
-        # 🔥 korrekt output extraction
-        text = response.candidates[0].content.parts[0].text
+        # 🔥 robust parsing
+        text = ""
+
+        if response.candidates:
+            parts = response.candidates[0].content.parts
+            for p in parts:
+                if hasattr(p, "text") and p.text:
+                    text += p.text
+
         print("AI RAW:", text)
 
-        return text
+        return text if text else '{"name":"ukendt","price":0}'
 
     except Exception as e:
         print("AI FEJL:", str(e))
-        return '{"name": "ukendt", "price": 0}'
+        return '{"name":"ukendt","price":0}'
 
 
-# ---------- JSON PARSER ----------
+# ---------- JSON ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "")
@@ -99,7 +106,7 @@ async def analyze(file: UploadFile = File(...)):
         }
 
 
-# ---------- TEST ----------
+# ---------- HEALTH ----------
 @app.get("/")
 def root():
     return {"status": "API is running"}
