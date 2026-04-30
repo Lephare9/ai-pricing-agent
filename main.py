@@ -8,7 +8,7 @@ import json
 
 app = FastAPI()
 
-# 🌐 CORS (vigtigt for Vercel frontend)
+# 🌐 CORS (så frontend virker)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,7 +29,18 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # ---------- AI ANALYSE ----------
 def analyze_image_with_ai(image_bytes):
     try:
-        prompt = "Beskriv produkt og giv realistisk pris som JSON"
+        prompt = """
+Analyser billedet.
+
+Du må KUN vurdere pris ud fra IDENTISKE eller næsten identiske produkter i Danmark.
+
+Svar KUN med ren JSON (ingen tekst, ingen markdown):
+
+{
+  "name": "kort navn (1-3 ord)",
+  "price": tal
+}
+"""
 
         response = client.models.generate_content(
             model="gemini-1.5-flash",
@@ -50,57 +61,15 @@ def analyze_image_with_ai(image_bytes):
     except Exception as e:
         print("AI FEJL:", str(e))
         return '{"name": "ukendt", "price": 0}'
-    try:
-        prompt = """
-Analyser billedet.
-
-Du må KUN vurdere pris ud fra IDENTISKE eller næsten identiske produkter i Danmark.
-
-Svar KUN i JSON:
-{
-  "name": "kort navn (1-3 ord)",
-  "price": tal
-}
-
-Ingen forklaring. Kun JSON.
-"""
-
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(prompt),
-                        types.Part.from_bytes(
-                            data=image_bytes,
-                            mime_type="image/jpeg"
-                        )
-                    ]
-                )
-            ]
-        )
-
-        return response.text
-
-    except Exception as e:
-        print("AI FEJL:", str(e))
-        return '{"name": "ukendt", "price": 0}'
 
 
 # ---------- JSON PARSER ----------
-import json
-import re
-
 def extract_json(text):
     try:
-        # fjern markdown hvis AI svarer med ```json
         text = text.replace("```json", "").replace("```", "")
-
         match = re.search(r"\{.*?\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
-
     except Exception as e:
         print("JSON FEJL:", str(e))
 
@@ -114,7 +83,8 @@ async def analyze(file: UploadFile = File(...)):
 
     try:
         ai_response = analyze_image_with_ai(image_bytes)
-        print("AI RESPONSE:", ai_response)
+        print("AI RESPONSE:", ai_response)  # debug
+
         data = extract_json(ai_response)
 
         return {
@@ -130,7 +100,7 @@ async def analyze(file: UploadFile = File(...)):
         }
 
 
-# ---------- TEST ROUTE ----------
+# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "API is running"}
