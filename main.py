@@ -8,7 +8,7 @@ import json
 
 app = FastAPI()
 
-# 🌐 CORS (frontend adgang)
+# 🌐 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔑 API key
+# 🔑 API KEY
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -32,7 +32,7 @@ def analyze_image_with_ai(image_bytes):
         prompt = """
 Analyser billedet og vurder en realistisk brugtpris i Danmark.
 
-Svar KUN i ren JSON (ingen tekst):
+Svar KUN i JSON:
 {
   "name": "kort navn (1-3 ord)",
   "price": tal
@@ -53,10 +53,12 @@ Svar KUN i ren JSON (ingen tekst):
             )
         )
 
-        # 🔍 debug
-        print("RAW AI:", response)
+        # 🔥 korrekt måde at hente tekst
+        text = response.candidates[0].content.parts[0].text
 
-        return response.text
+        print("AI RAW:", text)
+
+        return text
 
     except Exception as e:
         print("AI FEJL:", str(e))
@@ -67,11 +69,9 @@ Svar KUN i ren JSON (ingen tekst):
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "")
-
         match = re.search(r"\{.*?\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
-
     except Exception as e:
         print("JSON FEJL:", str(e))
 
@@ -85,8 +85,6 @@ async def analyze(file: UploadFile = File(...)):
 
     try:
         ai_response = analyze_image_with_ai(image_bytes)
-        print("AI RESPONSE:", ai_response)
-
         data = extract_json(ai_response)
 
         return {
@@ -102,7 +100,7 @@ async def analyze(file: UploadFile = File(...)):
         }
 
 
-# ---------- HEALTH CHECK ----------
+# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "API is running"}
