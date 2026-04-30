@@ -89,11 +89,18 @@ Ingen forklaring. Kun JSON.
 
 
 # ---------- JSON PARSER ----------
+import json
+import re
+
 def extract_json(text):
     try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
+        # fjern markdown hvis AI svarer med ```json
+        text = text.replace("```json", "").replace("```", "")
+
+        match = re.search(r"\{.*?\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
+
     except Exception as e:
         print("JSON FEJL:", str(e))
 
