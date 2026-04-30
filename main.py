@@ -8,7 +8,7 @@ import json
 
 app = FastAPI()
 
-# 🌐 CORS (så frontend virker)
+# 🌐 CORS (frontend adgang)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔑 API KEY
+# 🔑 API key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -29,7 +29,15 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # ---------- AI ANALYSE ----------
 def analyze_image_with_ai(image_bytes):
     try:
-        prompt = "Beskriv produkt og giv realistisk pris som JSON"
+        prompt = """
+Analyser billedet og vurder en realistisk brugtpris i Danmark.
+
+Svar KUN i ren JSON (ingen tekst):
+{
+  "name": "kort navn (1-3 ord)",
+  "price": tal
+}
+"""
 
         response = client.models.generate_content(
             model="gemini-1.5-flash",
@@ -45,19 +53,25 @@ def analyze_image_with_ai(image_bytes):
             )
         )
 
+        # 🔍 debug
+        print("RAW AI:", response)
+
         return response.text
 
     except Exception as e:
         print("AI FEJL:", str(e))
         return '{"name": "ukendt", "price": 0}'
 
+
 # ---------- JSON PARSER ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "")
+
         match = re.search(r"\{.*?\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
+
     except Exception as e:
         print("JSON FEJL:", str(e))
 
@@ -71,7 +85,7 @@ async def analyze(file: UploadFile = File(...)):
 
     try:
         ai_response = analyze_image_with_ai(image_bytes)
-        print("AI RESPONSE:", ai_response)  # debug
+        print("AI RESPONSE:", ai_response)
 
         data = extract_json(ai_response)
 
@@ -88,7 +102,7 @@ async def analyze(file: UploadFile = File(...)):
         }
 
 
-# ---------- TEST ----------
+# ---------- HEALTH CHECK ----------
 @app.get("/")
 def root():
     return {"status": "API is running"}
