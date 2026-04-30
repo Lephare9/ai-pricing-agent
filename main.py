@@ -1,29 +1,27 @@
 from fastapi import FastAPI, UploadFile, File
-from google import genai
+import google.generativeai as genai
+import os
 import re
-import time
 
 app = FastAPI()
 
-# 🔑 DIN API KEY
-import os
-
+# 🔑 API KEY fra Render environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+if not GEMINI_API_KEY:
+    raise ValueError("Missing GEMINI_API_KEY")
+
+genai.configure(api_key=GEMINI_API_KEY)
 
 
-# ---------- AI CALL MED RETRY + FALLBACK ----------
-def call_ai_with_retry(image_bytes):
-    models = [
-        "gemini-3.1-flash-lite-preview",     # primær (hurtig)
-        "gemini-3.1-flash-image-preview"     # fallback
-    ]
+# ---------- AI ANALYSE ----------
+def analyze_image_with_ai(image_bytes):
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = """
 Analyser billedet.
 
-Du må KUN vurdere pris ud fra IDENTISKE eller næsten identiske produkter.
+Du må KUN vurdere pris ud fra IDENTISKE eller næsten identiske produkter i Danmark.
 
 Svar KUN i JSON:
 {
@@ -32,65 +30,51 @@ Svar KUN i JSON:
 }
 
 Regler:
-- realistisk brugtpris i Danmark
-- ignorér afvigelser og design-varianter
+- realistisk brugtpris
+- ignorér outliers
 - ingen forklaring
 """
 
-    for model in models:
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[
-                        prompt,
-                        genai.types.Part.from_bytes(
-                            data=image_bytes,
-                            mime_type="image/jpeg"
-                        )
-                    ]
-                )
+    response = model.generate_content([
+        prompt,
+        {
+            "mime_type": "image/jpeg",
+            "data": image_bytes
+        }
+    ])
 
-                return response.text
-
-            except Exception as e:
-                print(f"AI fejl ({model}) forsøg {attempt+1}:", e)
-                time.sleep(1)  # lille pause før retry
-
-    return None
+    return response.text
 
 
-# ---------- PARSE AI SVAR ----------
-def parse_ai_response(text):
-    if not text:
-        return "ukendt", None
-
-    name_match = re.search(r'"name"\s*:\s*"([^"]+)"', text)
-    name = name_match.group(1) if name_match else "ukendt"
-
-    price_match = re.search(r'"price"\s*:\s*(\d+)', text)
-    price = int(price_match.group(1)) if price_match else None
-
-    return name, price
+# ---------- JSON PARSER ----------
+def extract_json(text):
+    try:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            return eval(match.group())
+    except:
+        pass
+    return {"name": "ukendt", "price": 0}
 
 
-# ---------- ROOT ----------
-@app.get("/")
-def root():
-    return {"status": "AI robust mode kører"}
-
-
-# ---------- API ----------
+# ---------- API ENDPOINT ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
 
-    raw = call_ai_with_retry(image_bytes)
+    try:
+        ai_response = analyze_image_with_ai(image_bytes)
+        data = extract_json(ai_response)
 
-    name, price = parse_ai_response(raw)
+        return {
+            "description": data.get("name", "ukendt"),
+            "price": data.get("price", 0)
+        }
 
-    return {
-        "description": name,
-        "price": price,
-        "raw": raw
-    }
+    except Exception as e:
+        print("FEJL:", e)
+
+        return {
+            "description": "ukendt",
+            "price": 0
+        }
