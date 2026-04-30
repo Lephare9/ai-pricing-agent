@@ -29,25 +29,14 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # ---------- AI ANALYSE ----------
 def analyze_image_with_ai(image_bytes):
     try:
-        prompt = """
-Analyser billedet.
-
-Du må KUN vurdere pris ud fra IDENTISKE eller næsten identiske produkter i Danmark.
-
-Svar KUN med ren JSON (ingen tekst, ingen markdown):
-
-{
-  "name": "kort navn (1-3 ord)",
-  "price": tal
-}
-"""
+        prompt = "Beskriv produkt og giv realistisk pris som JSON"
 
         response = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=types.Content(
                 role="user",
                 parts=[
-                    types.Part.from_text(prompt),
+                    types.Part(text=prompt),
                     types.Part.from_bytes(
                         data=image_bytes,
                         mime_type="image/jpeg"
@@ -61,7 +50,6 @@ Svar KUN med ren JSON (ingen tekst, ingen markdown):
     except Exception as e:
         print("AI FEJL:", str(e))
         return '{"name": "ukendt", "price": 0}'
-
 
 # ---------- JSON PARSER ----------
 def extract_json(text):
