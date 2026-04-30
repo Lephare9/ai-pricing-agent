@@ -40,7 +40,7 @@ Svar KUN i JSON:
 """
 
         response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
+            model="gemini-1.0-pro-vision",  # 🔥 virker med v1beta
             contents=types.Content(
                 role="user",
                 parts=[
@@ -53,9 +53,8 @@ Svar KUN i JSON:
             )
         )
 
-        # 🔥 korrekt måde at hente tekst
+        # 🔥 korrekt output extraction
         text = response.candidates[0].content.parts[0].text
-
         print("AI RAW:", text)
 
         return text
