@@ -114,6 +114,7 @@ async def analyze(file: UploadFile = File(...)):
 
     try:
         ai_response = analyze_image_with_ai(image_bytes)
+        print("AI RESPONSE:", ai_response)
         data = extract_json(ai_response)
 
         return {
