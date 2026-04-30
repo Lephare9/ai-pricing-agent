@@ -1,14 +1,13 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
-from google.genai import types
 import os
 import re
 import json
 
 app = FastAPI()
 
-# 🌐 CORS
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,50 +16,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔑 API KEY
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not GEMINI_API_KEY:
-    raise ValueError("Missing GEMINI_API_KEY")
-
-client = genai.Client(api_key=GEMINI_API_KEY)
+# API key
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ---------- AI ----------
 def analyze_image_with_ai(image_bytes):
     try:
         prompt = """
-Analyser billedet og vurder en realistisk brugtpris i Danmark.
+Analyser billedet og vurder en realistisk brugtpris.
 
 Svar KUN i JSON:
-{
-  "name": "kort navn",
-  "price": tal
-}
+{"name":"...", "price": 123}
 """
 
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=types.Content(
-                role="user",
-                parts=[
-                    types.Part(text=prompt),
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type="image/jpeg"
-                    )
-                ]
-            )
+            contents=[
+                prompt,
+                {
+                    "mime_type": "image/jpeg",
+                    "data": image_bytes
+                }
+            ]
         )
 
-        # 🔥 robust parsing
-        text = ""
-
-        if response.candidates:
-            parts = response.candidates[0].content.parts
-            for p in parts:
-                if hasattr(p, "text") and p.text:
-                    text += p.text
+        text = response.text
 
         print("AI RAW:", text)
 
@@ -78,8 +59,8 @@ def extract_json(text):
         match = re.search(r"\{.*?\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
-    except Exception as e:
-        print("JSON FEJL:", str(e))
+    except:
+        pass
 
     return {"name": "ukendt", "price": 0}
 
@@ -89,24 +70,15 @@ def extract_json(text):
 async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
 
-    try:
-        ai_response = analyze_image_with_ai(image_bytes)
-        data = extract_json(ai_response)
+    ai_response = analyze_image_with_ai(image_bytes)
+    data = extract_json(ai_response)
 
-        return {
-            "description": data.get("name", "ukendt"),
-            "price": data.get("price", 0)
-        }
-
-    except Exception as e:
-        print("FEJL:", str(e))
-        return {
-            "description": "ukendt",
-            "price": 0
-        }
+    return {
+        "description": data.get("name", "ukendt"),
+        "price": data.get("price", 0)
+    }
 
 
-# ---------- HEALTH ----------
 @app.get("/")
 def root():
-    return {"status": "API is running"}
+    return {"status": "ok"}
