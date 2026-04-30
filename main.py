@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File
-import google.generativeai as genai
+from google import genai
 import os
 import re
 
@@ -11,13 +11,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("Missing GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 # ---------- AI ANALYSE ----------
 def analyze_image_with_ai(image_bytes):
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
     prompt = """
 Analyser billedet.
 
@@ -35,13 +33,16 @@ Regler:
 - ingen forklaring
 """
 
-    response = model.generate_content([
-        prompt,
-        {
-            "mime_type": "image/jpeg",
-            "data": image_bytes
-        }
-    ])
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=[
+            prompt,
+            {
+                "mime_type": "image/jpeg",
+                "data": image_bytes
+            }
+        ]
+    )
 
     return response.text
 
