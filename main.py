@@ -34,7 +34,7 @@ def analyze_image_with_ai(image_bytes):
         print("🔥 CALLING GEMINI...")
 
         response = client.models.generate_content(
-            model="gemini-1.5-pro-latest",
+            model="gemini-1.5-flash-001",
             contents=[
                 types.Content(
                     parts=[
