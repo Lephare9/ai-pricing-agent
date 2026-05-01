@@ -1,9 +1,11 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
+from google import genai
 import os
 import re
 import json
+
+print("🔥 APP STARTED")
 
 app = FastAPI()
 
@@ -16,22 +18,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔑 API KEY
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-print("🔥 APP STARTED")
-
-# ---------- AI ----------
-from google import genai
-
+# 🔑 API key
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+
+# ---------- AI ----------
 def analyze_image_with_ai(image_bytes):
     print("🔥 FUNCTION STARTED")
 
     try:
         prompt = """
-Returnér KUN JSON:
+Returnér KUN gyldig JSON.
+Format:
 {"name":"kort navn","price":123}
 """
 
@@ -102,6 +100,7 @@ async def analyze(file: UploadFile = File(...)):
     }
 
 
+# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "ok"}
