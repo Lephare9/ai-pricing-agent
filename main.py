@@ -53,6 +53,10 @@ def analyze_image_with_ai(image_bytes):
             }
         )
 
+        # 🔥 DEBUG (meget vigtigt)
+        print("🔥 STATUS:", response.status_code)
+        print("🔥 TEXT:", response.text)
+
         data = response.json()
         print("🔥 RAW RESPONSE:", data)
 
