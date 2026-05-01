@@ -6,7 +6,7 @@ import os
 import re
 import json
 
-print("🔥 FINAL VERSION LOADED 🔥")
+
 
 app = FastAPI()
 
