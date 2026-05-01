@@ -1,10 +1,12 @@
-
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
+from google.genai import types
 import os
 import re
 import json
+
+print("🔥 FINAL VERSION LOADED 🔥")
 
 app = FastAPI()
 
@@ -22,15 +24,18 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ---------- AI ----------
-from google.genai import types
-
 def analyze_image_with_ai(image_bytes):
     try:
         prompt = """
-Analyser billedet og vurder en realistisk brugtpris.
+Returnér KUN gyldig JSON.
 
-Svar KUN i JSON:
-{"name":"...", "price":123}
+Format:
+{"name":"kort navn","price":123}
+
+Regler:
+- Ingen tekst før eller efter JSON
+- price er et tal
+- realistisk brugtpris i Danmark
 """
 
         response = client.models.generate_content(
@@ -44,14 +49,17 @@ Svar KUN i JSON:
                         mime_type="image/jpeg"
                     )
                 ]
-            )
+            ),
+            generation_config={
+                "response_mime_type": "application/json"
+            }
         )
 
+        # 🔥 robust output extraction
         text = ""
 
         if response.candidates:
-            parts = response.candidates[0].content.parts
-            for p in parts:
+            for p in response.candidates[0].content.parts:
                 if hasattr(p, "text") and p.text:
                     text += p.text
 
@@ -71,8 +79,8 @@ def extract_json(text):
         match = re.search(r"\{.*?\}", text, re.DOTALL)
         if match:
             return json.loads(match.group())
-    except:
-        pass
+    except Exception as e:
+        print("JSON FEJL:", str(e))
 
     return {"name": "ukendt", "price": 0}
 
@@ -91,6 +99,7 @@ async def analyze(file: UploadFile = File(...)):
     }
 
 
+# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "ok"}
