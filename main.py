@@ -33,7 +33,7 @@ def analyze_image_with_ai(image_bytes):
         print("🔥 CALLING AI (HTTP)...")
 
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-001:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro-vision-latest:generateContent",
             headers={"Content-Type": "application/json"},
             params={"key": os.getenv("GEMINI_API_KEY")},
             json={
