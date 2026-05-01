@@ -24,39 +24,30 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ---------- AI ----------
-from google.genai import types
+import google.generativeai as genai
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def analyze_image_with_ai(image_bytes):
     try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
         prompt = """
-Returnér KUN JSON.
-
-Format:
+Returnér KUN JSON:
 {"name":"kort navn","price":123}
-
-Ingen forklaring.
 """
 
-        response = client.models.generate_content(
-            model="gemini-1.5-flash-002",
-            contents=types.Content(
-                role="user",
-                parts=[
-                    types.Part(text=prompt),
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type="image/jpeg"
-                    )
-                ]
-            )
+        response = model.generate_content(
+            [
+                prompt,
+                {
+                    "mime_type": "image/jpeg",
+                    "data": image_bytes
+                }
+            ]
         )
 
-        text = ""
-
-        if response.candidates:
-            for p in response.candidates[0].content.parts:
-                if hasattr(p, "text") and p.text:
-                    text += p.text
+        text = response.text
 
         print("AI RAW:", text)
 
