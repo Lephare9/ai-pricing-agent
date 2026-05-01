@@ -1,5 +1,4 @@
-🔥 NEW CODE RUNNING 🔥
-print("🔥 VERSION 4 LIVE 🔥")
+
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
@@ -23,27 +22,38 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ---------- AI ----------
+from google.genai import types
+
 def analyze_image_with_ai(image_bytes):
     try:
         prompt = """
 Analyser billedet og vurder en realistisk brugtpris.
 
 Svar KUN i JSON:
-{"name":"...", "price": 123}
+{"name":"...", "price":123}
 """
 
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=[
-                prompt,
-                {
-                    "mime_type": "image/jpeg",
-                    "data": image_bytes
-                }
-            ]
+            contents=types.Content(
+                role="user",
+                parts=[
+                    types.Part(text=prompt),
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/jpeg"
+                    )
+                ]
+            )
         )
 
-        text = response.text
+        text = ""
+
+        if response.candidates:
+            parts = response.candidates[0].content.parts
+            for p in parts:
+                if hasattr(p, "text") and p.text:
+                    text += p.text
 
         print("AI RAW:", text)
 
