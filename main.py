@@ -1,11 +1,12 @@
+print("🔥 HTTP VERSION ACTIVE 🔥")
+
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from google import genai
 import os
 import re
 import json
-
-print("🔥 APP STARTED")
+import base64
+import requests
 
 app = FastAPI()
 
@@ -18,37 +19,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔑 API key
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-
 # ---------- AI ----------
 def analyze_image_with_ai(image_bytes):
     print("🔥 FUNCTION STARTED")
 
     try:
-        prompt = """
-Returnér KUN gyldig JSON.
-Format:
+        prompt = """Returnér KUN JSON:
 {"name":"kort navn","price":123}
 """
 
-        print("🔥 CALLING AI...")
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=[
-                prompt,
-                {
-                    "mime_type": "image/jpeg",
-                    "data": image_bytes
-                }
-            ]
+        print("🔥 CALLING AI (HTTP)...")
+
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent",
+            headers={"Content-Type": "application/json"},
+            params={"key": os.getenv("GEMINI_API_KEY")},
+            json={
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt},
+                            {
+                                "inline_data": {
+                                    "mime_type": "image/jpeg",
+                                    "data": image_base64
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
         )
 
-        print("🔥 AI CALLED")
+        data = response.json()
+        print("🔥 RAW RESPONSE:", data)
 
-        text = response.text
+        text = data.get("candidates", [{}])[0] \
+                  .get("content", {}) \
+                  .get("parts", [{}])[0] \
+                  .get("text", "")
+
         print("🔥 AI RAW:", text)
 
         return text if text else '{"name":"ukendt","price":0}'
