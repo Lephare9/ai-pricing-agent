@@ -22,12 +22,14 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 print("🔥 APP STARTED")
 
 # ---------- AI ----------
+from google import genai
+
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
 def analyze_image_with_ai(image_bytes):
     print("🔥 FUNCTION STARTED")
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-
         prompt = """
 Returnér KUN JSON:
 {"name":"kort navn","price":123}
@@ -35,20 +37,20 @@ Returnér KUN JSON:
 
         print("🔥 CALLING AI...")
 
-        response = model.generate_content(
-            [
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[
                 prompt,
-                {
-                    "mime_type": "image/jpeg",
-                    "data": image_bytes
-                }
+                genai.types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type="image/jpeg"
+                )
             ]
         )
 
         print("🔥 AI CALLED")
 
         text = response.text
-
         print("🔥 AI RAW:", text)
 
         return text if text else '{"name":"ukendt","price":0}'
