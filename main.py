@@ -13,7 +13,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
-# 🌐 CORS
+# 🌐 CORS (tillader frontend at kalde API)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,9 +38,9 @@ def analyze_image_with_ai(image_bytes):
                         {
                             "type": "text",
                             "text": (
-                                "Estimate realistic resale price in DKK.\n"
-                                "Return ONLY valid JSON. No markdown.\n"
-                                "{\"name\":\"short product name\",\"price\":123,\"reason\":\"short explanation\"}"
+                                "Vurder en realistisk brugtpris i danske kroner.\n"
+                                "Returnér KUN gyldig JSON uden markdown:\n"
+                                "{\"name\":\"kort navn\",\"price\":123,\"reason\":\"kort forklaring\"}"
                             ),
                         },
                         {
@@ -58,11 +58,11 @@ def analyze_image_with_ai(image_bytes):
         text = response.choices[0].message.content
         print("🔥 AI RAW:", text)
 
-        return text if text else '{"name":"unknown","price":0,"reason":""}'
+        return text if text else '{"name":"ukendt","price":0,"reason":""}'
 
     except Exception as e:
         print("🔥 AI FEJL:", str(e))
-        return '{"name":"unknown","price":0,"reason":""}'
+        return '{"name":"ukendt","price":0,"reason":""}'
 
 
 # ---------- JSON ----------
@@ -77,7 +77,7 @@ def extract_json(text):
         if match:
             data = json.loads(match.group())
 
-            # fix hvis price er string
+            # hvis price kommer som tekst → lav til int
             if isinstance(data.get("price"), str):
                 data["price"] = int(re.sub(r"\D", "", data["price"]) or 0)
 
@@ -87,7 +87,7 @@ def extract_json(text):
     except Exception as e:
         print("🔥 JSON FEJL:", str(e))
 
-    return {"name": "unknown", "price": 0, "reason": ""}
+    return {"name": "ukendt", "price": 0, "reason": ""}
 
 
 # ---------- API ----------
@@ -104,7 +104,7 @@ async def analyze(file: UploadFile = File(...)):
     print("🔥 FINAL OUTPUT:", data)
 
     return {
-        "description": data.get("name", "unknown"),
+        "description": data.get("name", "ukendt"),
         "price": data.get("price", 0),
         "reason": data.get("reason", "")
     }
