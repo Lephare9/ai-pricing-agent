@@ -24,18 +24,17 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ---------- AI ----------
+from google.genai import types
+
 def analyze_image_with_ai(image_bytes):
     try:
         prompt = """
-Returnér KUN gyldig JSON.
+Returnér KUN JSON.
 
 Format:
 {"name":"kort navn","price":123}
 
-Regler:
-- Ingen tekst før eller efter JSON
-- price er et tal
-- realistisk brugtpris i Danmark
+Ingen forklaring.
 """
 
         response = client.models.generate_content(
@@ -49,13 +48,9 @@ Regler:
                         mime_type="image/jpeg"
                     )
                 ]
-            ),
-            generation_config={
-                "response_mime_type": "application/json"
-            }
+            )
         )
 
-        # 🔥 robust output extraction
         text = ""
 
         if response.candidates:
