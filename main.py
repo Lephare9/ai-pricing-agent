@@ -39,10 +39,10 @@ Format:
             model="gemini-1.5-flash",
             contents=[
                 prompt,
-                genai.types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type="image/jpeg"
-                )
+                {
+                    "mime_type": "image/jpeg",
+                    "data": image_bytes
+                }
             ]
         )
 
