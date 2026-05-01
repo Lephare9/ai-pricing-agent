@@ -5,10 +5,9 @@ import os
 import re
 import json
 
-# 🔥 init
 app = FastAPI()
 
-# 🌐 CORS (frontend adgang)
+# 🌐 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,25 +16,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔑 API key
+# 🔑 API KEY
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+print("🔥 APP STARTED")
 
 # ---------- AI ----------
 def analyze_image_with_ai(image_bytes):
+    print("🔥 FUNCTION STARTED")
+
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = """
-Returnér KUN gyldig JSON.
-
-Format:
+Returnér KUN JSON:
 {"name":"kort navn","price":123}
-
-Regler:
-- Ingen tekst før eller efter JSON
-- price skal være et tal (ingen "kr")
-- realistisk brugtpris i Danmark
 """
+
+        print("🔥 CALLING AI...")
 
         response = model.generate_content(
             [
@@ -47,21 +45,23 @@ Regler:
             ]
         )
 
+        print("🔥 AI CALLED")
+
         text = response.text
 
-        print("AI RAW:", text)
+        print("🔥 AI RAW:", text)
 
         return text if text else '{"name":"ukendt","price":0}'
 
     except Exception as e:
-        print("AI FEJL:", str(e))
+        print("🔥 AI FEJL:", str(e))
         return '{"name":"ukendt","price":0}'
 
 
 # ---------- JSON ----------
 def extract_json(text):
     try:
-        print("RAW:", text)
+        print("🔥 PARSER INPUT:", text)
 
         text = text.replace("```json", "").replace("```", "")
 
@@ -69,14 +69,14 @@ def extract_json(text):
         if match:
             data = json.loads(match.group())
 
-            # 🔥 hvis price er string → gør til int
             if isinstance(data.get("price"), str):
                 data["price"] = int(re.sub(r"\D", "", data["price"]) or 0)
 
+            print("🔥 PARSED JSON:", data)
             return data
 
     except Exception as e:
-        print("JSON FEJL:", str(e))
+        print("🔥 JSON FEJL:", str(e))
 
     return {"name": "ukendt", "price": 0}
 
@@ -84,10 +84,15 @@ def extract_json(text):
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
+    print("🔥 ENDPOINT HIT")
+
     image_bytes = await file.read()
+    print("🔥 FILE RECEIVED:", len(image_bytes), "bytes")
 
     ai_response = analyze_image_with_ai(image_bytes)
     data = extract_json(ai_response)
+
+    print("🔥 FINAL OUTPUT:", data)
 
     return {
         "description": data.get("name", "ukendt"),
@@ -95,7 +100,6 @@ async def analyze(file: UploadFile = File(...)):
     }
 
 
-# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "ok"}
