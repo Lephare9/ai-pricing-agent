@@ -1,4 +1,4 @@
-print("🔥 GEMINI STABLE AGENT 🔥")
+print("🔥 GEMINI FINAL STABLE AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,12 +21,12 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# ---------- AI (DIRECT HTTP – STABIL) ----------
+# ---------- AI ----------
 def analyze_image(image_bytes):
     try:
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={GEMINI_API_KEY}"
 
         payload = {
             "contents": [
@@ -125,8 +125,6 @@ async def analyze(file: UploadFile = File(...)):
     return result
 
 
-# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "ok"}
-    
