@@ -1,4 +1,4 @@
-print("🔥 GEMINI ONLY AGENT 🔥")
+print("🔥 GEMINI DEBUG AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +8,7 @@ import json
 import base64
 from google import genai
 
-# 🔑 Gemini client (NY SDK)
+# 🔑 Gemini client
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = FastAPI()
@@ -30,21 +30,23 @@ def analyze_image(image_bytes):
         prompt = """
         Analyze this item from an image.
 
-        Return ONLY valid JSON:
+        IMPORTANT:
+        Return ONLY valid JSON. No text before or after.
 
+        Example:
         {
-          "name": "product name",
-          "price_min": number,
-          "price_max": number,
-          "hits_total": number,
-          "hits_exact": number,
-          "hits_similar": number,
-          "confidence": number
+          "name": "iPhone 12",
+          "price_min": 1500,
+          "price_max": 2500,
+          "hits_total": 5,
+          "hits_exact": 3,
+          "hits_similar": 2,
+          "confidence": 80
         }
 
         Rules:
-        - Estimate USED market prices in Denmark (DKK)
-        - Be realistic
+        - Danish used market prices (DKK)
+        - Always include ALL fields
         """
 
         response = client.models.generate_content(
@@ -60,11 +62,14 @@ def analyze_image(image_bytes):
             ]
         )
 
-        return response.text
+        text = response.text
+        print("🔥 GEMINI RAW RESPONSE:", text)
+
+        return text
 
     except Exception as e:
         print("🔥 GEMINI ERROR:", str(e))
-        return '{"name":"ukendt","price_min":0,"price_max":0,"hits_total":0,"hits_exact":0,"hits_similar":0,"confidence":0}'
+        return ""
 
 
 # ---------- JSON ----------
@@ -72,11 +77,16 @@ def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-    except Exception as e:
-        print("🔥 JSON FEJL:", str(e))
 
+        if match:
+            data = json.loads(match.group())
+            print("🔥 PARSED JSON:", data)
+            return data
+
+    except Exception as e:
+        print("🔥 JSON ERROR:", str(e))
+
+    # fallback
     return {
         "name": "ukendt",
         "price_min": 0,
@@ -91,12 +101,15 @@ def extract_json(text):
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
+    print("🔥 ENDPOINT HIT")
+
     image_bytes = await file.read()
+    print("🔥 IMAGE SIZE:", len(image_bytes))
 
     ai_response = analyze_image(image_bytes)
     data = extract_json(ai_response)
 
-    return {
+    result = {
         "description": data.get("name", "ukendt"),
         "price_range": f"{data.get('price_min',0)} - {data.get('price_max',0)} kr",
         "hits_total": data.get("hits_total", 0),
@@ -104,6 +117,10 @@ async def analyze(file: UploadFile = File(...)):
         "hits_similar": data.get("hits_similar", 0),
         "confidence": data.get("confidence", 0)
     }
+
+    print("🔥 FINAL RESPONSE:", result)
+
+    return result
 
 
 # ---------- TEST ----------
