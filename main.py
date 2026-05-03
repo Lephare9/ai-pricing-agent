@@ -1,4 +1,4 @@
-print("🔥 GEMINI FINAL STABLE AGENT 🔥")
+print("🔥 GEMINI DK AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +10,7 @@ import requests
 
 app = FastAPI()
 
-# 🌐 CORS
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,16 +28,11 @@ def analyze_image(image_bytes):
 
         url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": """
-Return ONLY valid JSON.
+        prompt = """
+Svar KUN med gyldig JSON.
 
 {
-  "name": "product name",
+  "name": "produktnavn på dansk",
   "price_min": number,
   "price_max": number,
   "hits_total": number,
@@ -46,11 +41,19 @@ Return ONLY valid JSON.
   "confidence": number
 }
 
-Rules:
-- Used prices in Denmark (DKK)
-- Always include all fields
+Regler:
+- Brug danske brugtpriser (DBA, Facebook Marketplace, Trendsales)
+- Tænk i SOLGTE priser
+- Alle priser i DKK
+- Svar på dansk
+- confidence mellem 0 og 1
 """
-                        },
+
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
                         {
                             "inline_data": {
                                 "mime_type": "image/jpeg",
@@ -117,7 +120,7 @@ async def analyze(file: UploadFile = File(...)):
         "hits_total": data.get("hits_total", 0),
         "hits_exact": data.get("hits_exact", 0),
         "hits_similar": data.get("hits_similar", 0),
-        "confidence": data.get("confidence", 0)
+        "confidence": int(data.get("confidence", 0) * 100)
     }
 
     print("🔥 FINAL RESPONSE:", result)
