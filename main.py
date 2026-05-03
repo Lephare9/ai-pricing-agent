@@ -6,11 +6,10 @@ import os
 import re
 import json
 import base64
-import google.generativeai as genai
+from google import genai
 
-# 🔑 Gemini setup
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-1.5-flash")
+# 🔑 Gemini client (NY SDK)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = FastAPI()
 
@@ -40,29 +39,32 @@ def analyze_image(image_bytes):
           "hits_total": number,
           "hits_exact": number,
           "hits_similar": number,
-          "confidence": number (0-100)
+          "confidence": number
         }
 
         Rules:
-        - Estimate realistic USED market prices in Denmark (DKK)
-        - hits = how many listings you would expect to find
-        - exact = same model
-        - similar = close alternatives
+        - Estimate USED market prices in Denmark (DKK)
+        - Be realistic
         """
 
-        response = model.generate_content([
-            prompt,
-            {
-                "mime_type": "image/jpeg",
-                "data": image_base64
-            }
-        ])
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[
+                {"text": prompt},
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": image_base64
+                    }
+                }
+            ]
+        )
 
         return response.text
 
     except Exception as e:
         print("🔥 GEMINI ERROR:", str(e))
-        return '{"name":"ukendt"}'
+        return '{"name":"ukendt","price_min":0,"price_max":0,"hits_total":0,"hits_exact":0,"hits_similar":0,"confidence":0}'
 
 
 # ---------- JSON ----------
@@ -104,6 +106,7 @@ async def analyze(file: UploadFile = File(...)):
     }
 
 
+# ---------- TEST ----------
 @app.get("/")
 def root():
     return {"status": "ok"}
