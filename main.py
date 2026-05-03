@@ -1,4 +1,4 @@
-print("🔥 GEMINI DEBUG AGENT 🔥")
+print("🔥 GEMINI STABLE AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,10 +6,7 @@ import os
 import re
 import json
 import base64
-from google import genai
-
-# 🔑 Gemini client
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+import requests
 
 app = FastAPI()
 
@@ -22,49 +19,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- AI ----------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# ---------- AI (DIRECT HTTP – STABIL) ----------
 def analyze_image(image_bytes):
     try:
-        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        prompt = """
-        Analyze this item from an image.
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-        IMPORTANT:
-        Return ONLY valid JSON. No text before or after.
-
-        Example:
-        {
-          "name": "iPhone 12",
-          "price_min": 1500,
-          "price_max": 2500,
-          "hits_total": 5,
-          "hits_exact": 3,
-          "hits_similar": 2,
-          "confidence": 80
-        }
-
-        Rules:
-        - Danish used market prices (DKK)
-        - Always include ALL fields
-        """
-
-        response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
-            contents=[
-                {"text": prompt},
+        payload = {
+            "contents": [
                 {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_base64
-                    }
+                    "parts": [
+                        {
+                            "text": """
+Return ONLY valid JSON.
+
+{
+  "name": "product name",
+  "price_min": number,
+  "price_max": number,
+  "hits_total": number,
+  "hits_exact": number,
+  "hits_similar": number,
+  "confidence": number
+}
+
+Rules:
+- Used prices in Denmark (DKK)
+- Always include all fields
+"""
+                        },
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": base64_image
+                            }
+                        }
+                    ]
                 }
             ]
-        )
+        }
 
-        text = response.text
-        print("🔥 GEMINI RAW RESPONSE:", text)
+        res = requests.post(url, json=payload)
+        data = res.json()
 
+        print("🔥 RAW API RESPONSE:", data)
+
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
         return text
 
     except Exception as e:
@@ -79,14 +82,13 @@ def extract_json(text):
         match = re.search(r"\{.*\}", text, re.DOTALL)
 
         if match:
-            data = json.loads(match.group())
-            print("🔥 PARSED JSON:", data)
-            return data
+            parsed = json.loads(match.group())
+            print("🔥 PARSED JSON:", parsed)
+            return parsed
 
     except Exception as e:
         print("🔥 JSON ERROR:", str(e))
 
-    # fallback
     return {
         "name": "ukendt",
         "price_min": 0,
@@ -127,3 +129,4 @@ async def analyze(file: UploadFile = File(...)):
 @app.get("/")
 def root():
     return {"status": "ok"}
+    
