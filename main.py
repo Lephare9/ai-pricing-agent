@@ -1,16 +1,15 @@
-print("🔥 GEMINI DK AGENT 🔥")
+print("🔥 GEMINI OPTIMIZED AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import os
-import re
-import json
 import base64
 import requests
+import json
+import re
 
 app = FastAPI()
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,59 +22,58 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ---------- AI ----------
 def analyze_image(image_bytes):
-    try:
-        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    prompt = """
+Du vurderer brugtpris på danske genbrugsvarer.
 
-        prompt = """
-Svar KUN med gyldig JSON.
+KRAV:
+- Kun danske markedspriser (DBA, Facebook Marketplace, Trendsales)
+- KUN brugte varer (ikke nypris)
+- Vurder realistisk salgspris (ikke ønsket pris)
 
+PRIS:
+- Giv et SNÆVERT interval (max ±30%)
+- Hvis usikker → reducer interval
+- Undgå brede ranges
+
+OUTPUT (kun JSON):
 {
-  "name": "produktnavn på dansk",
-  "price_min": number,
-  "price_max": number,
-  "hits_total": number,
-  "hits_exact": number,
-  "hits_similar": number,
-  "confidence": number
+  "name": "kort dansk navn",
+  "price_min": 100,
+  "price_max": 200,
+  "hits_total": 50,
+  "hits_exact": 10,
+  "hits_similar": 40,
+  "confidence": 0.0-1.0
 }
-
-Regler:
-- Brug danske brugtpriser (DBA, Facebook Marketplace, Trendsales)
-- Tænk i SOLGTE priser
-- Alle priser i DKK
-- Svar på dansk
-- confidence mellem 0 og 1
 """
 
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": base64_image
-                            }
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": base64_image
                         }
-                    ]
-                }
-            ]
-        }
+                    }
+                ]
+            }
+        ]
+    }
 
-        res = requests.post(url, json=payload)
-        data = res.json()
+    res = requests.post(url, json=payload)
+    data = res.json()
 
-        print("🔥 RAW API RESPONSE:", data)
+    print("🔥 RAW:", data)
 
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return text
-
-    except Exception as e:
-        print("🔥 GEMINI ERROR:", str(e))
-        return ""
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return text
 
 
 # ---------- JSON ----------
@@ -83,49 +81,44 @@ def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
         match = re.search(r"\{.*\}", text, re.DOTALL)
+        data = json.loads(match.group())
 
-        if match:
-            parsed = json.loads(match.group())
-            print("🔥 PARSED JSON:", parsed)
-            return parsed
+        # clamp range
+        if data["price_max"] > data["price_min"] * 1.6:
+            avg = (data["price_min"] + data["price_max"]) // 2
+            data["price_min"] = int(avg * 0.8)
+            data["price_max"] = int(avg * 1.2)
 
-    except Exception as e:
-        print("🔥 JSON ERROR:", str(e))
+        return data
 
-    return {
-        "name": "ukendt",
-        "price_min": 0,
-        "price_max": 0,
-        "hits_total": 0,
-        "hits_exact": 0,
-        "hits_similar": 0,
-        "confidence": 0
-    }
+    except:
+        return {
+            "name": "ukendt",
+            "price_min": 0,
+            "price_max": 0,
+            "hits_total": 0,
+            "hits_exact": 0,
+            "hits_similar": 0,
+            "confidence": 0
+        }
 
 
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    print("🔥 ENDPOINT HIT")
-
     image_bytes = await file.read()
-    print("🔥 IMAGE SIZE:", len(image_bytes))
 
-    ai_response = analyze_image(image_bytes)
-    data = extract_json(ai_response)
+    ai_text = analyze_image(image_bytes)
+    data = extract_json(ai_text)
 
-    result = {
-        "description": data.get("name", "ukendt"),
-        "price_range": f"{data.get('price_min',0)} - {data.get('price_max',0)} kr",
-        "hits_total": data.get("hits_total", 0),
-        "hits_exact": data.get("hits_exact", 0),
-        "hits_similar": data.get("hits_similar", 0),
-        "confidence": int(data.get("confidence", 0) * 100)
+    return {
+        "description": data["name"],
+        "price_range": f"{data['price_min']} - {data['price_max']} kr",
+        "hits_total": data["hits_total"],
+        "hits_exact": data["hits_exact"],
+        "hits_similar": data["hits_similar"],
+        "confidence": int(data["confidence"] * 100)
     }
-
-    print("🔥 FINAL RESPONSE:", result)
-
-    return result
 
 
 @app.get("/")
