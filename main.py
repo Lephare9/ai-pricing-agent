@@ -1,8 +1,8 @@
-print("🔥 GEMINI V7 TIGHT RANGE 🔥")
+print("🔥 GEMINI V7 FAST MODE 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, json, re, time
+import os, base64, requests, json, re
 
 app = FastAPI()
 
@@ -17,7 +17,9 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
+# ---------- CALL GEMINI ----------
 def call_gemini(prompt, image_base64, model):
+
     url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
@@ -35,7 +37,7 @@ def call_gemini(prompt, image_base64, model):
     }
 
     try:
-        res = requests.post(url, json=payload, timeout=20)
+        res = requests.post(url, json=payload, timeout=15)
         data = res.json()
 
         if "candidates" not in data:
@@ -53,6 +55,7 @@ def call_gemini(prompt, image_base64, model):
         return None
 
 
+# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -62,6 +65,7 @@ def extract_json(text):
         return {}
 
 
+# ---------- STEP 1 ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -78,17 +82,18 @@ KRAV:
 - vær specifik
 """
 
-    for model in ["gemini-2.5-pro", "gemini-2.5-flash"]:
+    # 🔥 FLASH først (hurtigere)
+    for model in ["gemini-2.5-flash", "gemini-2.5-pro"]:
         result = call_gemini(prompt, image_base64, model)
         if result:
             parsed = extract_json(result)
             if parsed.get("name"):
                 return parsed
-        time.sleep(1)
 
     return None
 
 
+# ---------- STEP 2 ----------
 def price_object(image_base64, identity_json):
 
     prompt = f"""
@@ -111,17 +116,18 @@ Regler:
 - undgå brede ranges
 """
 
-    for model in ["gemini-2.5-pro", "gemini-2.5-flash"]:
+    # 🔥 FLASH først igen
+    for model in ["gemini-2.5-flash", "gemini-2.5-pro"]:
         result = call_gemini(prompt, image_base64, model)
         if result:
             parsed = extract_json(result)
             if parsed.get("price_max", 0) > 0:
                 return parsed
-        time.sleep(1)
 
     return None
 
 
+# ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
@@ -149,7 +155,7 @@ async def analyze(file: UploadFile = File(...)):
     price_min = int(price.get("price_min", 0))
     price_max = int(price.get("price_max", 0))
 
-    # 🔥 HARD CLAMP (kritisk)
+    # 🔥 HARD CLAMP (beholder din kvalitet)
     if price_max > 0:
         diff = price_max - price_min
         if diff > price_max * 0.3:
@@ -166,4 +172,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"status": "ok", "mode": "fast"}
