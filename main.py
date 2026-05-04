@@ -1,4 +1,4 @@
-print("🔥 GEMINI V6 STABLE FINAL 🔥")
+print("🔥 GEMINI V7 2-STEP AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,26 +18,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # ---------- CALL GEMINI ----------
-def call_gemini(image_base64, model):
+def call_gemini(prompt, image_base64, model):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
-
-    prompt = """
-Analyser billedet og returnér KUN JSON:
-
-{
-  "name": "",
-  "price_min": 0,
-  "price_max": 0
-}
-
-Hvis usikker:
-returnér:
-{
-  "name": "",
-  "price": "1234 DKK"
-}
-"""
 
     payload = {
         "contents": [{
@@ -69,88 +52,120 @@ returnér:
         return None
 
 
-# ---------- AI ----------
-def analyze_image(image_bytes):
-    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+# ---------- STEP 1: IDENTITY ----------
+def identify_object(image_base64):
 
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro"
-    ]
+    prompt = """
+Du analyserer et billede.
 
-    for i, model in enumerate(models):
-        print(f"🔥 TRY {i+1} → {model}")
+MÅ IKKE være generisk.
 
-        result = call_gemini(base64_image, model)
+Returnér KUN JSON:
 
+{
+  "name": "",
+  "details": "",
+  "is_design": true/false,
+  "confidence": 0.0
+}
+
+KRAV:
+- vær specifik (ikke bare "stol")
+- hvis design → skriv "muligvis [brand]"
+"""
+
+    models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+    for model in models:
+        result = call_gemini(prompt, image_base64, model)
         if result:
             return result
-
         time.sleep(1)
 
     return None
 
 
-# ---------- PARSE JSON ----------
+# ---------- STEP 2: PRICING ----------
+def price_object(image_base64, identity_text):
+
+    prompt = f"""
+Du vurderer pris på brugt genstand i Danmark.
+
+Produkt:
+{identity_text}
+
+Returnér KUN JSON:
+
+{{
+  "price_min": 0,
+  "price_max": 0,
+  "confidence": 0.0
+}}
+
+Regler:
+- hvis design → højere pris
+- snævert interval
+"""
+
+    models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+    for model in models:
+        result = call_gemini(prompt, image_base64, model)
+        if result:
+            return result
+        time.sleep(1)
+
+    return None
+
+
+# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
-
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        data = json.loads(match.group())
-
-        # 🔥 CASE 1: price string
-        if "price" in data:
-            price = int(re.sub(r"\D", "", str(data["price"])) or 0)
-
-            return {
-                "name": data.get("name", "ukendt"),
-                "price_min": int(price * 0.9),
-                "price_max": int(price * 1.1),
-                "confidence": 0.7
-            }
-
-        # 🔥 CASE 2: range
-        return {
-            "name": data.get("name", "ukendt"),
-            "price_min": int(data.get("price_min", 0)),
-            "price_max": int(data.get("price_max", 0)),
-            "confidence": 0.9
-        }
-
-    except Exception as e:
-        print("🔥 PARSE ERROR:", e)
-
-        return {
-            "name": "ukendt",
-            "price_min": 0,
-            "price_max": 0,
-            "confidence": 0
-        }
+        return json.loads(match.group())
+    except:
+        return {}
 
 
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
+
     image_bytes = await file.read()
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    ai_text = analyze_image(image_bytes)
+    # STEP 1
+    identity_raw = identify_object(base64_image)
 
-    # 🔥 FAIL SAFE
-    if not ai_text:
+    if not identity_raw:
         return {
-            "description": "AI er travl – prøv igen",
+            "description": "Kunne ikke analysere",
             "price_range": "-",
             "confidence": 0
         }
 
-    data = extract_json(ai_text)
+    identity = extract_json(identity_raw)
+
+    # STEP 2
+    price_raw = price_object(base64_image, identity.get("name", ""))
+
+    if not price_raw:
+        return {
+            "description": identity.get("name", "ukendt"),
+            "price_range": "-",
+            "confidence": 0
+        }
+
+    price = extract_json(price_raw)
+
+    price_min = int(price.get("price_min", 0))
+    price_max = int(price.get("price_max", 0))
 
     return {
-        "description": data["name"],
-        "price_range": f"{data['price_min']} - {data['price_max']} kr",
-        "confidence": int(data["confidence"] * 100)
+        "description": identity.get("name", "ukendt"),
+        "price_range": f"{price_min} - {price_max} kr",
+        "confidence": int(price.get("confidence", 0) * 100)
     }
 
 
