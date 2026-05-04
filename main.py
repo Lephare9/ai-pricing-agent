@@ -1,4 +1,4 @@
-print("🔥 GEMINI V2.1 AGENT 🔥")
+print("🔥 GEMINI STABLE AGENT V3 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +16,7 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+
 # ---------- AI ----------
 def analyze_image(image_bytes):
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -26,27 +27,42 @@ Du analyserer en brugt genstand i Danmark.
 MÅL:
 Identificér brand/model og giv realistisk pris.
 
+KRITISK:
+- Samme input skal give samme output (minimér variation)
+- Undgå tilfældige forskelle i pris og antal hits
+
 TRIN 1:
 - Identificér kategori + brand + model hvis muligt
-- Hvis designprodukt → vær specifik
+- Hvis designprodukt → vær præcis
 
 TRIN 2:
-- Må IKKE default til IKEA/JYSK uden grund
+- Må IKKE default til IKEA/JYSK uden tydelige tegn
 
 TRIN 3:
-- Vurder kvalitet (materialer, finish)
+- Vurder kvalitet (materiale, alder, stand)
 
 TRIN 4 – PRIS:
-- Brug SOLGTE + AKTIVE annoncer
-- Hvis model genkendt → brug KUN identiske
-- Ellers → brug lignende
+- Brug danske markedspladser:
+  DBA, Facebook Marketplace, Trendsales
+- Brug både SOLGTE og AKTIVE priser
 
-- Giv SNÆVERT interval (max ±25%)
+- Hvis model er genkendt:
+  → brug KUN identiske produkter
+
+- Hvis ikke:
+  → brug lignende produkter
+
+- Returnér SNÆVERT interval (max ±25%)
 
 TRIN 5:
 - hits_total
 - hits_exact
 - hits_similar
+
+REGLER:
+- Vær konservativ
+- Undgå store udsving
+- Vælg stabilt estimat fremfor aggressivt
 
 OUTPUT (JSON):
 {
@@ -78,6 +94,16 @@ OUTPUT (JSON):
     return text
 
 
+# ---------- STABILISERING ----------
+def stabilize_price(min_p, max_p):
+    avg = (min_p + max_p) / 2
+
+    # afrund til pæne tal
+    avg = round(avg / 50) * 50
+
+    return int(avg * 0.85), int(avg * 1.15)
+
+
 # ---------- JSON ----------
 def extract_json(text):
     try:
@@ -85,14 +111,21 @@ def extract_json(text):
         match = re.search(r"\{.*\}", text, re.DOTALL)
         data = json.loads(match.group())
 
-        # smart price logic
-        if data.get("hits_exact", 0) > 0:
-            pass
-        else:
-            data["price_min"] = int(data["price_min"] * 0.9)
-            data["price_max"] = int(data["price_max"] * 1.1)
+        min_p = data.get("price_min", 0)
+        max_p = data.get("price_max", 0)
 
-        return data
+        # 🔥 stabilisering
+        min_p, max_p = stabilize_price(min_p, max_p)
+
+        return {
+            "name": data.get("name", "ukendt"),
+            "price_min": min_p,
+            "price_max": max_p,
+            "hits_total": data.get("hits_total", 0),
+            "hits_exact": data.get("hits_exact", 0),
+            "hits_similar": data.get("hits_similar", 0),
+            "confidence": data.get("confidence", 0)
+        }
 
     except:
         return {
