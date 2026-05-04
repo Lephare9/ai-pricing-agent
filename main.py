@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 STABLE RETRY MODE 🔥")
+print("🔥 GEMINI V7 FINAL BRAND OPTIMIZED 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +34,7 @@ def call_gemini(prompt, image_base64=None):
 
     payload = {"contents": [{"parts": parts}]}
 
-    for attempt in range(2):  # 🔥 retry 1 gang
+    for attempt in range(2):  # retry
         try:
             res = requests.post(url, json=payload, timeout=60)
             data = res.json()
@@ -64,7 +64,7 @@ def extract_json(text):
         return {}, "parse_error"
 
 
-# ---------- STEP 1 ----------
+# ---------- STEP 1: IDENTIFY ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -80,6 +80,8 @@ Returnér KUN JSON:
 
 KRAV:
 - identificér brand og model hvis muligt
+- hvis møbel: overvej kendte designbrands (fx HAY, Muuto, Mater, Fritz Hansen, Bolia)
+- skriv brand hvis der er visuelle tegn
 - undgå generiske svar
 - max 1 kort linje
 """
@@ -92,13 +94,24 @@ KRAV:
     if parse_err:
         return None, parse_err
 
-    if not parsed.get("name"):
+    name = parsed.get("name", "")
+    confidence = parsed.get("confidence", 0)
+
+    if not name:
+        return None, "ai_failed"
+
+    # 🔥 Stop generiske svar
+    if len(name.split()) < 2:
+        return None, "ai_failed"
+
+    # 🔥 Anti IKEA fallback
+    if "ikea" in name.lower() and confidence < 0.6:
         return None, "ai_failed"
 
     return parsed, None
 
 
-# ---------- STEP 2 (NO IMAGE) ----------
+# ---------- STEP 2: PRICE ----------
 def price_object(identity_json):
 
     prompt = f"""
@@ -118,6 +131,7 @@ Returnér KUN JSON:
 Regler:
 - realistisk DBA niveau
 - max 30-40% forskel
+- undgå for lave priser på design
 """
 
     text, err = call_gemini(prompt, None)
@@ -142,6 +156,7 @@ async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
+    # STEP 1
     identity, err = identify_object(base64_image)
     if err:
         return {
@@ -151,6 +166,7 @@ async def analyze(file: UploadFile = File(...)):
             "error": err
         }
 
+    # STEP 2
     price, err = price_object(json.dumps(identity))
     if err:
         return {
@@ -163,6 +179,14 @@ async def analyze(file: UploadFile = File(...)):
     price_min = int(price.get("price_min", 0))
     price_max = int(price.get("price_max", 0))
 
+    name = identity.get("name", "").lower()
+
+    # 🔥 Brand boost
+    if any(x in name for x in ["mater", "hay", "fritz", "muuto", "bolia"]):
+        price_min = int(price_min * 1.3)
+        price_max = int(price_max * 1.3)
+
+    # Mild clamp
     if price_max > 0:
         diff = price_max - price_min
         if diff > price_max * 0.5:
@@ -180,4 +204,7 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "stable-retry"}
+    return {
+        "status": "ok",
+        "mode": "brand-optimized"
+    }
