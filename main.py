@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 PRODUCTION MODE 🔥")
+print("🔥 GEMINI V7 SMART HYBRID 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,42 +17,51 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
+# ---------- CALL GEMINI (FLASH + PRO FALLBACK) ----------
 def call_gemini(prompt, image_base64):
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                }
-            ]
-        }]
-    }
+    models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro"
+    ]
 
-    try:
-        res = requests.post(url, json=payload, timeout=40)
-        data = res.json()
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
 
-        if "candidates" not in data:
-            return None, "timeout"
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": image_base64
+                            }
+                        }
+                    ]
+                }]
+            }
 
-        text = data["candidates"][0]["content"]["parts"][0].get("text", "")
+            res = requests.post(url, json=payload, timeout=40)
+            data = res.json()
 
-        if not text or "{" not in text:
-            return None, "ai_failed"
+            if "candidates" not in data:
+                continue
 
-        return text, None
+            text = data["candidates"][0]["content"]["parts"][0].get("text", "")
 
-    except Exception as e:
-        print("GEMINI ERROR:", e)
-        return None, "timeout"
+            if text and "{" in text and len(text) > 30:
+                return text, None
+
+        except Exception as e:
+            print("MODEL ERROR:", model, e)
+            continue
+
+    return None, "timeout"
 
 
+# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -63,10 +72,11 @@ def extract_json(text):
         return {}, "parse_error"
 
 
+# ---------- STEP 1 ----------
 def identify_object(image_base64):
 
     prompt = """
-Analyser billedet.
+Analyser billedet præcist.
 
 Returnér KUN JSON:
 
@@ -77,10 +87,10 @@ Returnér KUN JSON:
 }
 
 KRAV:
-- max 5 linjer
-- kort og konkret
-- inkluder model hvis muligt
-- fx: "IKEA MALM kommode, hvid, brugt stand"
+- identificér brand og model hvis muligt
+- hvis design: skriv designer/brand (IKKE IKEA medmindre sikkert)
+- undgå generiske svar
+- max 1 kort linje
 """
 
     text, err = call_gemini(prompt, image_base64)
@@ -94,9 +104,17 @@ KRAV:
     if not parsed.get("name"):
         return None, "ai_failed"
 
+    # 🔥 Anti IKEA fallback
+    name = parsed.get("name", "").lower()
+    confidence = parsed.get("confidence", 0)
+
+    if "ikea" in name and confidence < 0.6:
+        return None, "ai_failed"
+
     return parsed, None
 
 
+# ---------- STEP 2 ----------
 def price_object(image_base64, identity_json):
 
     prompt = f"""
@@ -114,8 +132,9 @@ Returnér KUN JSON:
 }}
 
 Regler:
-- max 30% forskel mellem min og max
-- snævert interval
+- realistisk DBA niveau
+- max 30-40% forskel
+- undgå for lave priser på design
 """
 
     text, err = call_gemini(prompt, image_base64)
@@ -132,21 +151,24 @@ Regler:
     return parsed, None
 
 
+# ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
+    # STEP 1
     identity, err = identify_object(base64_image)
     if err:
         return {
-            "description": "Ukendt",
+            "description": "Ukendt model",
             "price_range": "-",
             "confidence": 0,
             "error": err
         }
 
+    # STEP 2
     price, err = price_object(base64_image, json.dumps(identity))
     if err:
         return {
@@ -159,12 +181,13 @@ async def analyze(file: UploadFile = File(...)):
     price_min = int(price.get("price_min", 0))
     price_max = int(price.get("price_max", 0))
 
+    # 🔥 Mild clamp (mindre aggressiv)
     if price_max > 0:
         diff = price_max - price_min
-        if diff > price_max * 0.3:
+        if diff > price_max * 0.5:
             mid = (price_min + price_max) // 2
-            price_min = int(mid * 0.85)
-            price_max = int(mid * 1.15)
+            price_min = int(mid * 0.8)
+            price_max = int(mid * 1.2)
 
     return {
         "description": identity.get("name", "Ukendt"),
@@ -176,4 +199,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "production"}
+    return {"status": "ok", "mode": "smart-hybrid"}
