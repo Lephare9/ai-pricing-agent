@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 2-STEP AGENT 🔥")
+print("🔥 GEMINI V7 STABLE 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,25 +40,39 @@ def call_gemini(prompt, image_base64, model):
         res = requests.post(url, json=payload, timeout=20)
         data = res.json()
 
-        print(f"🔥 MODEL {model}:", data)
+        print(f"\n🔥 MODEL {model} RESPONSE:\n", data)
 
         if "candidates" not in data:
             return None
 
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        text = data["candidates"][0]["content"]["parts"][0].get("text", "")
+
+        if not text or "{" not in text:
+            return None
+
+        return text
 
     except Exception as e:
         print("🔥 GEMINI ERROR:", e)
         return None
 
 
-# ---------- STEP 1: IDENTITY ----------
+# ---------- PARSE ----------
+def extract_json(text):
+    try:
+        text = text.replace("```json", "").replace("```", "").strip()
+        match = re.search(r"\{.*?\}", text, re.DOTALL)  # ✅ non-greedy
+        return json.loads(match.group())
+    except Exception as e:
+        print("🔥 JSON ERROR:", text)
+        return {}
+
+
+# ---------- STEP 1 ----------
 def identify_object(image_base64):
 
     prompt = """
 Du analyserer et billede.
-
-MÅ IKKE være generisk.
 
 Returnér KUN JSON:
 
@@ -70,29 +84,31 @@ Returnér KUN JSON:
 }
 
 KRAV:
-- vær specifik (ikke bare "stol")
-- hvis design → skriv "muligvis [brand]"
+- vær specifik (ikke "stol")
+- hvis muligt → brand/model
 """
 
-    models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    models = ["gemini-2.5-pro", "gemini-2.5-flash"]
 
     for model in models:
         result = call_gemini(prompt, image_base64, model)
         if result:
-            return result
+            parsed = extract_json(result)
+            if parsed.get("name"):
+                return parsed
         time.sleep(1)
 
     return None
 
 
-# ---------- STEP 2: PRICING ----------
-def price_object(image_base64, identity_text):
+# ---------- STEP 2 ----------
+def price_object(image_base64, identity_json):
 
     prompt = f"""
 Du vurderer pris på brugt genstand i Danmark.
 
 Produkt:
-{identity_text}
+{identity_json}
 
 Returnér KUN JSON:
 
@@ -103,29 +119,21 @@ Returnér KUN JSON:
 }}
 
 Regler:
-- hvis design → højere pris
 - snævert interval
+- realistisk DBA/Marketplace pris
 """
 
-    models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    models = ["gemini-2.5-pro", "gemini-2.5-flash"]
 
     for model in models:
         result = call_gemini(prompt, image_base64, model)
         if result:
-            return result
+            parsed = extract_json(result)
+            if parsed.get("price_max", 0) > 0:
+                return parsed
         time.sleep(1)
 
     return None
-
-
-# ---------- PARSE ----------
-def extract_json(text):
-    try:
-        text = text.replace("```json", "").replace("```", "").strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        return json.loads(match.group())
-    except:
-        return {}
 
 
 # ---------- API ----------
@@ -136,35 +144,28 @@ async def analyze(file: UploadFile = File(...)):
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
     # STEP 1
-    identity_raw = identify_object(base64_image)
+    identity = identify_object(base64_image)
 
-    if not identity_raw:
+    if not identity:
         return {
             "description": "Kunne ikke analysere",
             "price_range": "-",
             "confidence": 0
         }
 
-    identity = extract_json(identity_raw)
+    # STEP 2 (🔥 FIX: send hele JSON)
+    price = price_object(base64_image, json.dumps(identity))
 
-    # STEP 2
-    price_raw = price_object(base64_image, identity.get("name", ""))
-
-    if not price_raw:
+    if not price:
         return {
             "description": identity.get("name", "ukendt"),
             "price_range": "-",
             "confidence": 0
         }
 
-    price = extract_json(price_raw)
-
-    price_min = int(price.get("price_min", 0))
-    price_max = int(price.get("price_max", 0))
-
     return {
         "description": identity.get("name", "ukendt"),
-        "price_range": f"{price_min} - {price_max} kr",
+        "price_range": f"{int(price.get('price_min',0))} - {int(price.get('price_max',0))} kr",
         "confidence": int(price.get("confidence", 0) * 100)
     }
 
