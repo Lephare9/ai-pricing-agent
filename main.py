@@ -1,8 +1,8 @@
-print("🔥 GEMINI V4 DESIGN AGENT 🔥")
+print("🔥 GEMINI V6 STABLE AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, json, re
+import os, base64, requests, json, re, time
 
 app = FastAPI()
 
@@ -17,69 +17,63 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- AI ----------
-def analyze_image(image_bytes):
-    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+# ---------- CALL GEMINI ----------
+def call_gemini(image_base64, model):
 
-    prompt = """
-Du analyserer en brugt genstand i Danmark.
-
-DIT PRIMÆRE MÅL:
-Identificér om dette er et DESIGNERPRODUKT eller masseproduceret.
-
-TRIN 1 – DESIGN DETECTION:
-- Materialer (massivt træ, læder, metal vs plastik)
-- Konstruktion (detaljer, håndværk)
-- Form (unik vs standard)
-
-Hvis høj kvalitet → design_possible = true
-
-TRIN 2 – IDENTITET:
-Hvis design_possible:
-- Forsøg brand/model (fx Mater, Hay, Normann)
-
-TRIN 3 – PRIS:
-Hvis design:
-- Brug high-end marked
-- IGNORÉR IKEA/JYSK
-
-Hvis ikke:
-- Brug normal brugtpris
-
-TRIN 4:
-- Snævert interval (max ±25%)
-
-OUTPUT JSON:
-{
-  "name": "",
-  "price_min": 0,
-  "price_max": 0,
-  "hits_total": 0,
-  "hits_exact": 0,
-  "hits_similar": 0,
-  "confidence": 0.0,
-  "design_detected": true
-}
-"""
-
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
         "contents": [{
             "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
+                {"text": "Analyser produkt og returnér JSON med navn og pris"},
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": image_base64
+                    }
+                }
             ]
         }]
     }
 
-    res = requests.post(url, json=payload)
+    res = requests.post(url, json=payload, timeout=20)
     data = res.json()
 
-    print("🔥 RAW:", data)
+    print(f"🔥 MODEL {model}:", data)
 
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return text
+    if "candidates" not in data:
+        return None
+
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+# ---------- AI ----------
+def analyze_image(image_bytes):
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+    # 🔁 retry + fallback
+    models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro"
+    ]
+
+    for i, model in enumerate(models):
+        try:
+            print(f"🔥 TRY {i+1} → {model}")
+
+            result = call_gemini(base64_image, model)
+
+            if result:
+                return result
+
+            time.sleep(1)
+
+        except Exception as e:
+            print("🔥 ERROR:", e)
+            time.sleep(1)
+
+    return None
 
 
 # ---------- JSON ----------
@@ -89,25 +83,14 @@ def extract_json(text):
         match = re.search(r"\{.*\}", text, re.DOTALL)
         data = json.loads(match.group())
 
-        # 🔥 DESIGN BOOST
-        if data.get("design_detected") == True:
-            data["price_min"] = int(data["price_min"] * 1.15)
-            data["price_max"] = int(data["price_max"] * 1.25)
-
         return data
 
-    except Exception as e:
-        print("🔥 JSON ERROR:", e)
-
+    except:
         return {
             "name": "ukendt",
             "price_min": 0,
             "price_max": 0,
-            "hits_total": 0,
-            "hits_exact": 0,
-            "hits_similar": 0,
-            "confidence": 0,
-            "design_detected": False
+            "confidence": 0
         }
 
 
@@ -117,15 +100,21 @@ async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
 
     ai_text = analyze_image(image_bytes)
+
+    # 🔥 FAIL SAFE
+    if not ai_text:
+        return {
+            "description": "AI er travl – prøv igen",
+            "price_range": "-",
+            "confidence": 0
+        }
+
     data = extract_json(ai_text)
 
     return {
-        "description": data["name"],
-        "price_range": f"{data['price_min']} - {data['price_max']} kr",
-        "hits_total": data["hits_total"],
-        "hits_exact": data["hits_exact"],
-        "hits_similar": data["hits_similar"],
-        "confidence": int(data["confidence"] * 100)
+        "description": data.get("name", "ukendt"),
+        "price_range": f"{int(data.get('price_min', 0))} - {int(data.get('price_max', 0))} kr",
+        "confidence": int(data.get("confidence", 0) * 100)
     }
 
 
