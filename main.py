@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 SMART HYBRID 🔥")
+print("🔥 GEMINI V7 FLASH ONLY STABLE 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,48 +17,42 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- CALL GEMINI (FLASH + PRO FALLBACK) ----------
+# ---------- CALL GEMINI ----------
 def call_gemini(prompt, image_base64):
 
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro"
-    ]
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    for model in models:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": image_base64
+                    }
+                }
+            ]
+        }]
+    }
 
-            payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": image_base64
-                            }
-                        }
-                    ]
-                }]
-            }
+    try:
+        res = requests.post(url, json=payload, timeout=30)
+        data = res.json()
 
-            res = requests.post(url, json=payload, timeout=40)
-            data = res.json()
+        if "candidates" not in data:
+            return None, "timeout"
 
-            if "candidates" not in data:
-                continue
+        text = data["candidates"][0]["content"]["parts"][0].get("text", "")
 
-            text = data["candidates"][0]["content"]["parts"][0].get("text", "")
+        if not text or "{" not in text:
+            return None, "ai_failed"
 
-            if text and "{" in text and len(text) > 30:
-                return text, None
+        return text, None
 
-        except Exception as e:
-            print("MODEL ERROR:", model, e)
-            continue
-
-    return None, "timeout"
+    except Exception as e:
+        print("GEMINI ERROR:", e)
+        return None, "timeout"
 
 
 # ---------- PARSE ----------
@@ -72,7 +66,7 @@ def extract_json(text):
         return {}, "parse_error"
 
 
-# ---------- STEP 1 ----------
+# ---------- STEP 1: IDENTIFY ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -104,7 +98,7 @@ KRAV:
     if not parsed.get("name"):
         return None, "ai_failed"
 
-    # 🔥 Anti IKEA fallback
+    # Anti-IKEA fallback
     name = parsed.get("name", "").lower()
     confidence = parsed.get("confidence", 0)
 
@@ -114,7 +108,7 @@ KRAV:
     return parsed, None
 
 
-# ---------- STEP 2 ----------
+# ---------- STEP 2: PRICE ----------
 def price_object(image_base64, identity_json):
 
     prompt = f"""
@@ -181,7 +175,7 @@ async def analyze(file: UploadFile = File(...)):
     price_min = int(price.get("price_min", 0))
     price_max = int(price.get("price_max", 0))
 
-    # 🔥 Mild clamp (mindre aggressiv)
+    # Mild clamp (undgå ekstreme ranges)
     if price_max > 0:
         diff = price_max - price_min
         if diff > price_max * 0.5:
@@ -199,4 +193,7 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "smart-hybrid"}
+    return {
+        "status": "ok",
+        "mode": "flash-only-stable"
+    }
