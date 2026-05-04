@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 STABLE 🔥")
+print("🔥 GEMINI V7 CLEAN 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,8 +40,6 @@ def call_gemini(prompt, image_base64, model):
         res = requests.post(url, json=payload, timeout=20)
         data = res.json()
 
-        print(f"\n🔥 MODEL {model} RESPONSE:\n", data)
-
         if "candidates" not in data:
             return None
 
@@ -53,7 +51,7 @@ def call_gemini(prompt, image_base64, model):
         return text
 
     except Exception as e:
-        print("🔥 GEMINI ERROR:", e)
+        print("GEMINI ERROR:", e)
         return None
 
 
@@ -61,10 +59,9 @@ def call_gemini(prompt, image_base64, model):
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
-        match = re.search(r"\{.*?\}", text, re.DOTALL)  # ✅ non-greedy
+        match = re.search(r"\{.*?\}", text, re.DOTALL)
         return json.loads(match.group())
-    except Exception as e:
-        print("🔥 JSON ERROR:", text)
+    except:
         return {}
 
 
@@ -72,25 +69,20 @@ def extract_json(text):
 def identify_object(image_base64):
 
     prompt = """
-Du analyserer et billede.
+Analyser billedet.
 
 Returnér KUN JSON:
 
 {
   "name": "",
-  "details": "",
-  "is_design": true/false,
   "confidence": 0.0
 }
 
 KRAV:
-- vær specifik (ikke "stol")
-- hvis muligt → brand/model
+- vær specifik (fx "IKEA MALM kommode")
 """
 
-    models = ["gemini-2.5-pro", "gemini-2.5-flash"]
-
-    for model in models:
+    for model in ["gemini-2.5-pro", "gemini-2.5-flash"]:
         result = call_gemini(prompt, image_base64, model)
         if result:
             parsed = extract_json(result)
@@ -105,7 +97,7 @@ KRAV:
 def price_object(image_base64, identity_json):
 
     prompt = f"""
-Du vurderer pris på brugt genstand i Danmark.
+Vurder brugtpris i Danmark.
 
 Produkt:
 {identity_json}
@@ -117,15 +109,9 @@ Returnér KUN JSON:
   "price_max": 0,
   "confidence": 0.0
 }}
-
-Regler:
-- snævert interval
-- realistisk DBA/Marketplace pris
 """
 
-    models = ["gemini-2.5-pro", "gemini-2.5-flash"]
-
-    for model in models:
+    for model in ["gemini-2.5-pro", "gemini-2.5-flash"]:
         result = call_gemini(prompt, image_base64, model)
         if result:
             parsed = extract_json(result)
@@ -143,28 +129,26 @@ async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    # STEP 1
     identity = identify_object(base64_image)
 
     if not identity:
         return {
-            "description": "Kunne ikke analysere",
+            "description": "Ukendt",
             "price_range": "-",
             "confidence": 0
         }
 
-    # STEP 2 (🔥 FIX: send hele JSON)
     price = price_object(base64_image, json.dumps(identity))
 
     if not price:
         return {
-            "description": identity.get("name", "ukendt"),
+            "description": identity.get("name", "Ukendt"),
             "price_range": "-",
             "confidence": 0
         }
 
     return {
-        "description": identity.get("name", "ukendt"),
+        "description": identity.get("name", "Ukendt"),
         "price_range": f"{int(price.get('price_min',0))} - {int(price.get('price_max',0))} kr",
         "confidence": int(price.get("confidence", 0) * 100)
     }
