@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 CLEAN 🔥")
+print("🔥 GEMINI V7 TIGHT RANGE 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,9 +17,7 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- CALL GEMINI ----------
 def call_gemini(prompt, image_base64, model):
-
     url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
@@ -55,7 +53,6 @@ def call_gemini(prompt, image_base64, model):
         return None
 
 
-# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -65,7 +62,6 @@ def extract_json(text):
         return {}
 
 
-# ---------- STEP 1 ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -79,7 +75,7 @@ Returnér KUN JSON:
 }
 
 KRAV:
-- vær specifik (fx "IKEA MALM kommode")
+- vær specifik
 """
 
     for model in ["gemini-2.5-pro", "gemini-2.5-flash"]:
@@ -93,7 +89,6 @@ KRAV:
     return None
 
 
-# ---------- STEP 2 ----------
 def price_object(image_base64, identity_json):
 
     prompt = f"""
@@ -109,6 +104,11 @@ Returnér KUN JSON:
   "price_max": 0,
   "confidence": 0.0
 }}
+
+Regler:
+- max 30% forskel mellem min og max
+- vælg snævert interval
+- undgå brede ranges
 """
 
     for model in ["gemini-2.5-pro", "gemini-2.5-flash"]:
@@ -122,7 +122,6 @@ Returnér KUN JSON:
     return None
 
 
-# ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
@@ -147,9 +146,20 @@ async def analyze(file: UploadFile = File(...)):
             "confidence": 0
         }
 
+    price_min = int(price.get("price_min", 0))
+    price_max = int(price.get("price_max", 0))
+
+    # 🔥 HARD CLAMP (kritisk)
+    if price_max > 0:
+        diff = price_max - price_min
+        if diff > price_max * 0.3:
+            mid = (price_min + price_max) // 2
+            price_min = int(mid * 0.85)
+            price_max = int(mid * 1.15)
+
     return {
         "description": identity.get("name", "Ukendt"),
-        "price_range": f"{int(price.get('price_min',0))} - {int(price.get('price_max',0))} kr",
+        "price_range": f"{price_min} - {price_max} kr",
         "confidence": int(price.get("confidence", 0) * 100)
     }
 
