@@ -1,12 +1,8 @@
-print("🔥 GEMINI OPTIMIZED AGENT 🔥")
+print("🔥 GEMINI V2.1 AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import base64
-import requests
-import json
-import re
+import os, base64, requests, json, re
 
 app = FastAPI()
 
@@ -25,52 +21,58 @@ def analyze_image(image_bytes):
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
     prompt = """
-Du vurderer brugtpris på danske genbrugsvarer.
+Du analyserer en brugt genstand i Danmark.
 
-KRAV:
-- Kun danske markedspriser (DBA, Facebook Marketplace, Trendsales)
-- KUN brugte varer (ikke nypris)
-- Vurder realistisk salgspris (ikke ønsket pris)
+MÅL:
+Identificér brand/model og giv realistisk pris.
 
-PRIS:
-- Giv et SNÆVERT interval (max ±30%)
-- Hvis usikker → reducer interval
-- Undgå brede ranges
+TRIN 1:
+- Identificér kategori + brand + model hvis muligt
+- Hvis designprodukt → vær specifik
 
-OUTPUT (kun JSON):
+TRIN 2:
+- Må IKKE default til IKEA/JYSK uden grund
+
+TRIN 3:
+- Vurder kvalitet (materialer, finish)
+
+TRIN 4 – PRIS:
+- Brug SOLGTE + AKTIVE annoncer
+- Hvis model genkendt → brug KUN identiske
+- Ellers → brug lignende
+
+- Giv SNÆVERT interval (max ±25%)
+
+TRIN 5:
+- hits_total
+- hits_exact
+- hits_similar
+
+OUTPUT (JSON):
 {
-  "name": "kort dansk navn",
-  "price_min": 100,
-  "price_max": 200,
-  "hits_total": 50,
-  "hits_exact": 10,
-  "hits_similar": 40,
-  "confidence": 0.0-1.0
+  "name": "",
+  "price_min": 0,
+  "price_max": 0,
+  "hits_total": 0,
+  "hits_exact": 0,
+  "hits_similar": 0,
+  "confidence": 0.0
 }
 """
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": base64_image
-                        }
-                    }
-                ]
-            }
-        ]
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
+            ]
+        }]
     }
 
     res = requests.post(url, json=payload)
     data = res.json()
-
-    print("🔥 RAW:", data)
 
     text = data["candidates"][0]["content"]["parts"][0]["text"]
     return text
@@ -83,11 +85,12 @@ def extract_json(text):
         match = re.search(r"\{.*\}", text, re.DOTALL)
         data = json.loads(match.group())
 
-        # clamp range
-        if data["price_max"] > data["price_min"] * 1.6:
-            avg = (data["price_min"] + data["price_max"]) // 2
-            data["price_min"] = int(avg * 0.8)
-            data["price_max"] = int(avg * 1.2)
+        # smart price logic
+        if data.get("hits_exact", 0) > 0:
+            pass
+        else:
+            data["price_min"] = int(data["price_min"] * 0.9)
+            data["price_max"] = int(data["price_max"] * 1.1)
 
         return data
 
