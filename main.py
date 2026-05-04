@@ -1,4 +1,4 @@
-print("🔥 GEMINI STABLE AGENT V3 🔥")
+print("🔥 GEMINI V4 DESIGN AGENT 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,47 +24,32 @@ def analyze_image(image_bytes):
     prompt = """
 Du analyserer en brugt genstand i Danmark.
 
-MÅL:
-Identificér brand/model og giv realistisk pris.
+DIT PRIMÆRE MÅL:
+Identificér om dette er et DESIGNERPRODUKT eller masseproduceret.
 
-KRITISK:
-- Samme input skal give samme output (minimér variation)
-- Undgå tilfældige forskelle i pris og antal hits
+TRIN 1 – DESIGN DETECTION:
+- Materialer (massivt træ, læder, metal vs plastik)
+- Konstruktion (detaljer, håndværk)
+- Form (unik vs standard)
 
-TRIN 1:
-- Identificér kategori + brand + model hvis muligt
-- Hvis designprodukt → vær præcis
+Hvis høj kvalitet → design_possible = true
 
-TRIN 2:
-- Må IKKE default til IKEA/JYSK uden tydelige tegn
+TRIN 2 – IDENTITET:
+Hvis design_possible:
+- Forsøg brand/model (fx Mater, Hay, Normann)
 
-TRIN 3:
-- Vurder kvalitet (materiale, alder, stand)
+TRIN 3 – PRIS:
+Hvis design:
+- Brug high-end marked
+- IGNORÉR IKEA/JYSK
 
-TRIN 4 – PRIS:
-- Brug danske markedspladser:
-  DBA, Facebook Marketplace, Trendsales
-- Brug både SOLGTE og AKTIVE priser
+Hvis ikke:
+- Brug normal brugtpris
 
-- Hvis model er genkendt:
-  → brug KUN identiske produkter
+TRIN 4:
+- Snævert interval (max ±25%)
 
-- Hvis ikke:
-  → brug lignende produkter
-
-- Returnér SNÆVERT interval (max ±25%)
-
-TRIN 5:
-- hits_total
-- hits_exact
-- hits_similar
-
-REGLER:
-- Vær konservativ
-- Undgå store udsving
-- Vælg stabilt estimat fremfor aggressivt
-
-OUTPUT (JSON):
+OUTPUT JSON:
 {
   "name": "",
   "price_min": 0,
@@ -72,7 +57,8 @@ OUTPUT (JSON):
   "hits_total": 0,
   "hits_exact": 0,
   "hits_similar": 0,
-  "confidence": 0.0
+  "confidence": 0.0,
+  "design_detected": true
 }
 """
 
@@ -90,18 +76,10 @@ OUTPUT (JSON):
     res = requests.post(url, json=payload)
     data = res.json()
 
+    print("🔥 RAW:", data)
+
     text = data["candidates"][0]["content"]["parts"][0]["text"]
     return text
-
-
-# ---------- STABILISERING ----------
-def stabilize_price(min_p, max_p):
-    avg = (min_p + max_p) / 2
-
-    # afrund til pæne tal
-    avg = round(avg / 50) * 50
-
-    return int(avg * 0.85), int(avg * 1.15)
 
 
 # ---------- JSON ----------
@@ -111,23 +89,16 @@ def extract_json(text):
         match = re.search(r"\{.*\}", text, re.DOTALL)
         data = json.loads(match.group())
 
-        min_p = data.get("price_min", 0)
-        max_p = data.get("price_max", 0)
+        # 🔥 DESIGN BOOST
+        if data.get("design_detected") == True:
+            data["price_min"] = int(data["price_min"] * 1.15)
+            data["price_max"] = int(data["price_max"] * 1.25)
 
-        # 🔥 stabilisering
-        min_p, max_p = stabilize_price(min_p, max_p)
+        return data
 
-        return {
-            "name": data.get("name", "ukendt"),
-            "price_min": min_p,
-            "price_max": max_p,
-            "hits_total": data.get("hits_total", 0),
-            "hits_exact": data.get("hits_exact", 0),
-            "hits_similar": data.get("hits_similar", 0),
-            "confidence": data.get("confidence", 0)
-        }
+    except Exception as e:
+        print("🔥 JSON ERROR:", e)
 
-    except:
         return {
             "name": "ukendt",
             "price_min": 0,
@@ -135,7 +106,8 @@ def extract_json(text):
             "hits_total": 0,
             "hits_exact": 0,
             "hits_similar": 0,
-            "confidence": 0
+            "confidence": 0,
+            "design_detected": False
         }
 
 
