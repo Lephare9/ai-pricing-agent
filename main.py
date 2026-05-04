@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 FAST STABLE 🔥")
+print("🔥 GEMINI V7 PRODUCTION MODE 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,9 +17,7 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- CALL GEMINI ----------
 def call_gemini(prompt, image_base64):
-
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
@@ -37,37 +35,34 @@ def call_gemini(prompt, image_base64):
     }
 
     try:
-        # 🔥 FIX: højere timeout
         res = requests.post(url, json=payload, timeout=40)
         data = res.json()
 
         if "candidates" not in data:
-            return None
+            return None, "timeout"
 
         text = data["candidates"][0]["content"]["parts"][0].get("text", "")
 
         if not text or "{" not in text:
-            return None
+            return None, "ai_failed"
 
-        return text
+        return text, None
 
     except Exception as e:
         print("GEMINI ERROR:", e)
-        return None
+        return None, "timeout"
 
 
-# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
         match = re.search(r"\{.*?\}", text, re.DOTALL)
-        return json.loads(match.group())
+        return json.loads(match.group()), None
     except:
         print("JSON ERROR:", text)
-        return {}
+        return {}, "parse_error"
 
 
-# ---------- STEP 1 ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -77,24 +72,31 @@ Returnér KUN JSON:
 
 {
   "name": "",
+  "condition": "",
   "confidence": 0.0
 }
 
 KRAV:
-- vær specifik
+- max 5 linjer
+- kort og konkret
+- inkluder model hvis muligt
+- fx: "IKEA MALM kommode, hvid, brugt stand"
 """
 
-    result = call_gemini(prompt, image_base64)
+    text, err = call_gemini(prompt, image_base64)
+    if err:
+        return None, err
 
-    if result:
-        parsed = extract_json(result)
-        if parsed.get("name"):
-            return parsed
+    parsed, parse_err = extract_json(text)
+    if parse_err:
+        return None, parse_err
 
-    return None
+    if not parsed.get("name"):
+        return None, "ai_failed"
+
+    return parsed, None
 
 
-# ---------- STEP 2 ----------
 def price_object(image_base64, identity_json):
 
     prompt = f"""
@@ -113,49 +115,50 @@ Returnér KUN JSON:
 
 Regler:
 - max 30% forskel mellem min og max
-- vælg snævert interval
-- undgå brede ranges
+- snævert interval
 """
 
-    result = call_gemini(prompt, image_base64)
+    text, err = call_gemini(prompt, image_base64)
+    if err:
+        return None, err
 
-    if result:
-        parsed = extract_json(result)
-        if parsed.get("price_max", 0) > 0:
-            return parsed
+    parsed, parse_err = extract_json(text)
+    if parse_err:
+        return None, parse_err
 
-    return None
+    if parsed.get("price_max", 0) <= 0:
+        return None, "ai_failed"
+
+    return parsed, None
 
 
-# ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    identity = identify_object(base64_image)
-
-    if not identity:
+    identity, err = identify_object(base64_image)
+    if err:
         return {
             "description": "Ukendt",
             "price_range": "-",
-            "confidence": 0
+            "confidence": 0,
+            "error": err
         }
 
-    price = price_object(base64_image, json.dumps(identity))
-
-    if not price:
+    price, err = price_object(base64_image, json.dumps(identity))
+    if err:
         return {
             "description": identity.get("name", "Ukendt"),
             "price_range": "-",
-            "confidence": 0
+            "confidence": 0,
+            "error": err
         }
 
     price_min = int(price.get("price_min", 0))
     price_max = int(price.get("price_max", 0))
 
-    # 🔥 HARD CLAMP (sikrer snævert spænd)
     if price_max > 0:
         diff = price_max - price_min
         if diff > price_max * 0.3:
@@ -166,10 +169,11 @@ async def analyze(file: UploadFile = File(...)):
     return {
         "description": identity.get("name", "Ukendt"),
         "price_range": f"{price_min} - {price_max} kr",
-        "confidence": int(price.get("confidence", 0) * 100)
+        "confidence": int(price.get("confidence", 0) * 100),
+        "error": None
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "fast-stable"}
+    return {"status": "ok", "mode": "production"}
