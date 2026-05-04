@@ -1,4 +1,4 @@
-print("🔥 GEMINI V7 FLASH ONLY STABLE 🔥")
+print("🔥 GEMINI V7 STABLE RETRY MODE 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,42 +17,40 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- CALL GEMINI ----------
-def call_gemini(prompt, image_base64):
+# ---------- CALL GEMINI (RETRY + TIMEOUT) ----------
+def call_gemini(prompt, image_base64=None):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                }
-            ]
-        }]
-    }
+    parts = [{"text": prompt}]
 
-    try:
-        res = requests.post(url, json=payload, timeout=30)
-        data = res.json()
+    if image_base64:
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": image_base64
+            }
+        })
 
-        if "candidates" not in data:
-            return None, "timeout"
+    payload = {"contents": [{"parts": parts}]}
 
-        text = data["candidates"][0]["content"]["parts"][0].get("text", "")
+    for attempt in range(2):  # 🔥 retry 1 gang
+        try:
+            res = requests.post(url, json=payload, timeout=60)
+            data = res.json()
 
-        if not text or "{" not in text:
-            return None, "ai_failed"
+            if "candidates" not in data:
+                continue
 
-        return text, None
+            text = data["candidates"][0]["content"]["parts"][0].get("text", "")
 
-    except Exception as e:
-        print("GEMINI ERROR:", e)
-        return None, "timeout"
+            if text and "{" in text:
+                return text, None
+
+        except Exception as e:
+            print(f"TRY {attempt+1} FAILED:", e)
+
+    return None, "timeout"
 
 
 # ---------- PARSE ----------
@@ -66,7 +64,7 @@ def extract_json(text):
         return {}, "parse_error"
 
 
-# ---------- STEP 1: IDENTIFY ----------
+# ---------- STEP 1 ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -82,7 +80,6 @@ Returnér KUN JSON:
 
 KRAV:
 - identificér brand og model hvis muligt
-- hvis design: skriv designer/brand (IKKE IKEA medmindre sikkert)
 - undgå generiske svar
 - max 1 kort linje
 """
@@ -98,18 +95,11 @@ KRAV:
     if not parsed.get("name"):
         return None, "ai_failed"
 
-    # Anti-IKEA fallback
-    name = parsed.get("name", "").lower()
-    confidence = parsed.get("confidence", 0)
-
-    if "ikea" in name and confidence < 0.6:
-        return None, "ai_failed"
-
     return parsed, None
 
 
-# ---------- STEP 2: PRICE ----------
-def price_object(image_base64, identity_json):
+# ---------- STEP 2 (NO IMAGE) ----------
+def price_object(identity_json):
 
     prompt = f"""
 Vurder brugtpris i Danmark.
@@ -128,10 +118,10 @@ Returnér KUN JSON:
 Regler:
 - realistisk DBA niveau
 - max 30-40% forskel
-- undgå for lave priser på design
 """
 
-    text, err = call_gemini(prompt, image_base64)
+    text, err = call_gemini(prompt, None)
+
     if err:
         return None, err
 
@@ -152,7 +142,6 @@ async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    # STEP 1
     identity, err = identify_object(base64_image)
     if err:
         return {
@@ -162,8 +151,7 @@ async def analyze(file: UploadFile = File(...)):
             "error": err
         }
 
-    # STEP 2
-    price, err = price_object(base64_image, json.dumps(identity))
+    price, err = price_object(json.dumps(identity))
     if err:
         return {
             "description": identity.get("name", "Ukendt"),
@@ -175,7 +163,6 @@ async def analyze(file: UploadFile = File(...)):
     price_min = int(price.get("price_min", 0))
     price_max = int(price.get("price_max", 0))
 
-    # Mild clamp (undgå ekstreme ranges)
     if price_max > 0:
         diff = price_max - price_min
         if diff > price_max * 0.5:
@@ -193,7 +180,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "mode": "flash-only-stable"
-    }
+    return {"status": "ok", "mode": "stable-retry"}
