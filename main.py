@@ -13,6 +13,7 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 # ---------- GEMINI ----------
@@ -31,23 +32,19 @@ def call_gemini(prompt, image_base64=None):
 
     payload = {"contents": [{"parts": parts}]}
 
-    for _ in range(2):
-        try:
-            res = requests.post(url, json=payload, timeout=20)
-            data = res.json()
+    try:
+        res = requests.post(url, json=payload, timeout=15)
+        data = res.json()
 
-            if "candidates" not in data:
-                print("NO CANDIDATES:", data)
-                time.sleep(1)
-                continue
+        if "candidates" not in data:
+            print("GEMINI ERROR:", data)
+            return None
 
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+        return data["candidates"][0]["content"]["parts"][0]["text"]
 
-        except Exception as e:
-            print("ERROR:", e)
-            time.sleep(1)
-
-    return None
+    except Exception as e:
+        print("ERROR:", e)
+        return None
 
 
 # ---------- PARSE ----------
@@ -58,75 +55,122 @@ def extract_json(text):
         end = text.rfind("}") + 1
         return json.loads(text[start:end])
     except:
-        print("JSON ERROR:", text)
         return {}
 
 
-# ---------- STEP 1: IDENTIFY ----------
+# ---------- IDENTIFY ----------
 def identify_object(image_base64):
 
     prompt = """
-Identificér produktet præcist.
+Identificér produkt meget præcist.
 
 Returnér KUN JSON:
 
 {
   "name": "",
-  "brand": ""
+  "brand": "",
+  "type": ""
 }
 
 Regler:
-- vær konkret
-- find model hvis muligt
+- inkluder model hvis muligt
+- hvis ukendt brand → skriv ""
+- vær kort og konkret
 """
 
     return call_gemini(prompt, image_base64)
 
 
-# ---------- STEP 2: PRICE LIST ----------
-def generate_price_list(name, brand):
+# ---------- SEARCH ----------
+def search_prices(query):
+
+    url = "https://serpapi.com/search"
+
+    params = {
+        "q": query,
+        "api_key": SERP_API_KEY,
+        "hl": "da",
+        "gl": "dk"
+    }
+
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
+
+        prices = []
+
+        for r in data.get("organic_results", []):
+            text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
+
+            found = re.findall(r"(\d{2,5})\s?kr", text)
+
+            for p in found:
+                val = int(p)
+                if 20 < val < 50000:
+                    prices.append(val)
+
+        return prices[:20]
+
+    except Exception as e:
+        print("SEARCH ERROR:", e)
+        return []
+
+
+# ---------- CLEAN ----------
+def clean_prices(prices):
+
+    if len(prices) < 5:
+        return prices
+
+    prices.sort()
+
+    cut = max(1, int(len(prices) * 0.2))
+
+    return prices[cut:-cut]
+
+
+# ---------- ROUND ----------
+def round5(x):
+    return int(round(x / 5) * 5)
+
+
+# ---------- CALC ----------
+def compute_range(prices):
+
+    if len(prices) < 3:
+        return 100, 300, 50
+
+    prices = clean_prices(prices)
+
+    avg = sum(prices) / len(prices)
+
+    spread = 0.10
+
+    min_p = round5(avg * (1 - spread))
+    max_p = round5(avg * (1 + spread))
+
+    return min_p, max_p, 90
+
+
+# ---------- AI FALLBACK ----------
+def fallback_ai(name, brand):
 
     prompt = f"""
-Find 8-15 realistiske brugtpriser i Danmark.
+Find 8 realistiske brugtpriser i Danmark.
 
 Produkt: {name}
 Brand: {brand}
 
-REGLER:
-- basér på DBA / marketplace niveau
-- brug både solgte og til salg
-- hvis ukendt brand → brug lignende produkter
-- hvis kendt brand → brug identiske
-- undgå ekstreme outliers
-
-Returnér KUN JSON:
-
+Returnér JSON:
 {{
-  "prices": [100,150,200,250],
-  "confidence": 0.0
+ "prices": [100,200,300]
 }}
 """
 
-    return call_gemini(prompt)
+    raw = call_gemini(prompt)
+    data = extract_json(raw) if raw else {}
 
-
-# ---------- PRICE CALC ----------
-def compute_price(prices, brand):
-
-    if not prices or len(prices) < 3:
-        return 100, 300, 50
-
-    avg = sum(prices) / len(prices)
-
-    # 🔥 FAST 10% RANGE
-    spread = 0.10
-
-    price_min = int(avg * (1 - spread))
-    price_max = int(avg * (1 + spread))
-
-    confidence = 85 if brand.lower() != "ukendt" else 70
-
-    return price_min, price_max, confidence
+    return data.get("prices", [])
 
 
 # ---------- API ----------
@@ -136,24 +180,28 @@ async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    # STEP 1
+    # STEP 1 IDENTIFY
     identity_raw = identify_object(base64_image)
     identity = extract_json(identity_raw) if identity_raw else {}
 
     name = identity.get("name") or "Ukendt produkt"
-    brand = identity.get("brand") or "ukendt"
+    brand = identity.get("brand") or ""
 
-    # STEP 2
-    price_raw = generate_price_list(name, brand)
-    price_data = extract_json(price_raw) if price_raw else {}
+    # STEP 2 QUERY (🔥 vigtig!)
+    if brand:
+        query = f"{brand} {name} brugt til salg dba danmark"
+    else:
+        query = f"{name} brugt til salg danmark"
 
-    prices = price_data.get("prices", [])
-    confidence_ai = int((price_data.get("confidence") or 0) * 100)
+    # STEP 3 SEARCH
+    prices = search_prices(query)
 
-    # STEP 3
-    price_min, price_max, confidence_calc = compute_price(prices, brand)
+    # STEP 4 FALLBACK
+    if len(prices) < 3:
+        prices = fallback_ai(name, brand)
 
-    confidence = max(confidence_ai, confidence_calc)
+    # STEP 5 CALC
+    price_min, price_max, confidence = compute_range(prices)
 
     return {
         "description": f"{name}\n{brand}",
@@ -164,4 +212,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v6-final"}
+    return {"status": "ok", "mode": "v8.1-extreme"}
