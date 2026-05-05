@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import os, base64, requests, json, re
-from bs4 import BeautifulSoup
 
 app = FastAPI()
 
@@ -14,16 +13,7 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-DESIGNER_BRANDS = [
-    "wegner", "hans j wegner",
-    "arne jacobsen",
-    "børge mogensen",
-    "finn juhl",
-    "verner panton",
-    "hay",
-    "muuto"
-]
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 # ---------- GEMINI ----------
@@ -57,13 +47,11 @@ def extract_json(text):
         return {}
 
 
-# ---------- IDENTIFY (VISUAL) ----------
+# ---------- IDENTIFY ----------
 def identify(image):
 
     prompt = """
-Du er ekspert i designmøbler og visuel genkendelse.
-
-Analyser billedet meget detaljeret.
+Du er ekspert i designmøbler og brugtmarked.
 
 Returnér KUN JSON:
 
@@ -76,24 +64,18 @@ Returnér KUN JSON:
  "shape": "",
  "style": ""
 }
-
-Kategorier:
-furniture, decor, clothing_branded, clothing_generic,
-small_item, book, art, vehicle, electronics
 """
 
     raw = call_gemini(prompt, image)
-    print("RAW GEMINI:", raw)
+    print("RAW:", raw)
 
     data = extract_json(raw)
 
     if not data:
-        data = {}
+        return {"name": "stol", "brand": "", "category": "furniture"}
 
     if not data.get("brand") and data.get("name"):
-        words = data["name"].split()
-        if len(words) > 1:
-            data["brand"] = words[0]
+        data["brand"] = data["name"].split()[0]
 
     if data.get("brand") and data.get("model"):
         data["name"] = f"{data['brand']} {data['model']}"
@@ -106,22 +88,11 @@ def build_query(data):
 
     parts = []
 
-    if data.get("brand"):
-        parts.append(data["brand"])
+    for key in ["brand", "name", "material", "shape", "style"]:
+        if data.get(key):
+            parts.append(data[key])
 
-    if data.get("name"):
-        parts.append(data["name"])
-
-    if data.get("material"):
-        parts.append(data["material"])
-
-    if data.get("shape"):
-        parts.append(data["shape"])
-
-    if data.get("style"):
-        parts.append(data["style"])
-
-    parts.append("danmark brugt")
+    parts.append("brugte priser danmark")
 
     query = " ".join(parts)
 
@@ -130,51 +101,41 @@ def build_query(data):
     return query
 
 
-# ---------- SEARCH ----------
-def search_dba(query, name, brand):
+# ---------- GOOGLE SEARCH ----------
+def google_search(query):
 
-    url = f"https://www.dba.dk/soeg/?soeg={query.replace(' ', '+')}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    url = "https://serpapi.com/search"
+
+    params = {
+        "q": query,
+        "api_key": SERP_API_KEY,
+        "hl": "da",
+        "gl": "dk"
+    }
 
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        r = requests.get(url, params=params)
+        data = r.json()
 
         results = []
 
-        for item in soup.find_all("a"):
+        for res in data.get("organic_results", []):
+            text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
 
-            text = item.get_text(" ").lower()
+            matches = re.findall(r"(\d{2,5})[\s.,-]*kr", text)
 
-            match = re.search(r"(\d{2,5})[\s.,-]*kr", text)
-            if not match:
-                continue
+            for m in matches:
+                price = int(m)
 
-            price = int(match.group(1))
-            if not (50 < price < 50000):
-                continue
+                if 20 < price < 50000:
+                    results.append(price)
 
-            score = 0
+        print("GOOGLE PRICES:", results[:10])
 
-            if brand and brand.lower() in text:
-                score += 4
+        return results
 
-            for word in name.lower().split():
-                if word in text:
-                    score += 1
-
-            results.append({
-                "price": price,
-                "score": score
-            })
-
-        results.sort(key=lambda x: x["score"], reverse=True)
-
-        prices = [r["price"] for r in results]
-
-        return prices[:15]
-
-    except:
+    except Exception as e:
+        print("GOOGLE ERROR:", e)
         return []
 
 
@@ -185,6 +146,7 @@ def smart_filter(prices, brand):
         return []
 
     prices = sorted(prices)
+
     median = prices[len(prices)//2]
 
     filtered = []
@@ -207,7 +169,7 @@ def round5(x):
     return int(round(x / 5) * 5)
 
 
-def calc_range(prices):
+def calc(prices):
 
     if len(prices) < 2:
         return None
@@ -215,102 +177,6 @@ def calc_range(prices):
     avg = sum(prices) / len(prices)
 
     return round5(avg * 0.9), round5(avg * 1.1)
-
-
-# ---------- CATEGORY ----------
-def handle_category(data):
-
-    name = data.get("name", "")
-    brand = data.get("brand", "")
-    category = data.get("category", "")
-    condition = data.get("condition", "")
-
-    if category in ["vehicle", "electronics"]:
-        return {
-            "description": f"{name}\n{brand}",
-            "price_range": "Ikke understøttet",
-            "condition": condition,
-            "note": "special kategori"
-        }
-
-    if category == "clothing_generic":
-        return {
-            "description": name,
-            "price_range": "50 - 150 kr",
-            "condition": condition,
-            "note": ""
-        }
-
-    if category == "book":
-        return {
-            "description": name,
-            "price_range": "10 - 100 kr",
-            "condition": condition,
-            "note": ""
-        }
-
-    if category == "small_item":
-        prices = search_dba(name, name, brand)
-        prices = [p for p in prices if p < 500]
-        prices = smart_filter(prices, brand)
-
-        result = calc_range(prices)
-
-        if result:
-            return {
-                "description": name,
-                "price_range": f"{result[0]} - {result[1]} kr",
-                "condition": condition,
-                "note": ""
-            }
-
-        return {
-            "description": name,
-            "price_range": "20 - 300 kr",
-            "condition": condition,
-            "note": "lignende"
-        }
-
-    # 🔥 CORE (visual search)
-    query = build_query(data)
-
-    prices = search_dba(query, name, brand)
-    prices = smart_filter(prices, brand)
-
-    # designer boost
-    if brand and brand.lower() in DESIGNER_BRANDS:
-        prices = [p for p in prices if p > 800]
-
-    result = calc_range(prices)
-
-    if result:
-        return {
-            "description": f"{name}\n{brand}",
-            "price_range": f"{result[0]} - {result[1]} kr",
-            "condition": condition,
-            "note": ""
-        }
-
-    # fallback
-    prices = search_dba(name, name, "")
-    prices = smart_filter(prices, "")
-
-    result = calc_range(prices)
-
-    if result:
-        return {
-            "description": f"{name}\n{brand}",
-            "price_range": f"{result[0]} - {result[1]} kr",
-            "condition": condition,
-            "note": "lignende"
-        }
-
-    return {
-        "description": f"{name}\n{brand}",
-        "price_range": "100 - 500 kr",
-        "condition": condition,
-        "note": "lignende"
-    }
 
 
 # ---------- API ----------
@@ -322,17 +188,52 @@ async def analyze(file: UploadFile = File(...)):
 
     data = identify(img64)
 
-    if not data:
+    name = data.get("name", "")
+    brand = data.get("brand", "")
+    category = data.get("category", "")
+    condition = data.get("condition", "")
+
+    # 🔴 blokér uønskede
+    if category in ["vehicle", "electronics"]:
         return {
-            "description": "Ukendt produkt",
-            "price_range": "Ingen pris",
-            "condition": "",
+            "description": f"{name}\n{brand}",
+            "price_range": "Ikke understøttet",
+            "condition": condition,
             "note": ""
         }
 
-    return handle_category(data)
+    # 🔧 bygg query
+    query = build_query(data)
+
+    # 🔍 hent data
+    prices = google_search(query)
+
+    # 🔥 fallback query hvis tom
+    if not prices:
+        print("FALLBACK QUERY")
+        prices = google_search(name + " pris brugt danmark")
+
+    prices = smart_filter(prices, brand)
+
+    result = calc(prices)
+
+    # 🔥 sidste fallback
+    if not result:
+        if brand:
+            result = (1500, 3500)
+        else:
+            result = (100, 500)
+
+    min_p, max_p = result
+
+    return {
+        "description": f"{name}\n{brand}",
+        "price_range": f"{min_p} - {max_p} kr",
+        "condition": condition,
+        "note": ""
+    }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v14-visual"}
+    return {"status": "ok", "mode": "v15-google"}
