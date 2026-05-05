@@ -15,7 +15,7 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- GEMINI CALL (RETRY) ----------
+# ---------- GEMINI CALL (STABIL + RETRY) ----------
 def call_gemini(prompt, image_base64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -53,7 +53,7 @@ def call_gemini(prompt, image_base64):
     return None
 
 
-# ---------- PARSE ----------
+# ---------- ROBUST JSON PARSER ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -65,34 +65,40 @@ def extract_json(text):
         return {}
 
 
-# ---------- STEP 1 ----------
+# ---------- STEP 1: IDENTIFY (BRAND OPTIMERET) ----------
 def identify_object(image_base64):
 
     prompt = """
-Identificér objektet præcist.
+Analyser billedet og identificér produktet præcist.
 
 Returnér KUN JSON:
 
 {
   "name": "",
+  "brand": "",
+  "details": "",
   "confidence": 0.0
 }
 
-Regler:
-- nævn brand hvis muligt
-- max 1 linje
+KRAV:
+- find specifik model hvis muligt
+- find brand (Bolia, HAY, IKEA, Mater, Muuto, Fritz Hansen, Normann osv)
+- hvis usikker → skriv "ukendt"
+- max 5 linjer i details
+- vær konkret, ikke generisk
 """
 
     return call_gemini(prompt, image_base64)
 
 
-# ---------- STEP 2 ----------
-def price_object(image_base64, name):
+# ---------- STEP 2: PRICE (BRAND AWARE) ----------
+def price_object(image_base64, name, brand):
 
     prompt = f"""
 Vurder brugtpris i Danmark.
 
 Produkt: {name}
+Brand: {brand}
 
 Returnér KUN JSON:
 
@@ -102,9 +108,13 @@ Returnér KUN JSON:
   "confidence": 0.0
 }}
 
-Regler:
+REGLER:
+- design brands = højere pris (Bolia, HAY, Mater, Muuto, Fritz Hansen)
+- IKEA = lavere pris
 - realistisk DBA niveau
-- max 30% interval
+- max 25% interval
+- hvis model kendes → vær præcis
+- hvis ukendt → lav konservativ vurdering
 """
 
     return call_gemini(prompt, image_base64)
@@ -122,9 +132,11 @@ async def analyze(file: UploadFile = File(...)):
     identity = extract_json(identity_raw) if identity_raw else {}
 
     name = identity.get("name") or "Ukendt produkt"
+    brand = identity.get("brand") or "ukendt"
+    details = identity.get("details") or ""
 
     # STEP 2
-    price_raw = price_object(base64_image, name)
+    price_raw = price_object(base64_image, name, brand)
     price = extract_json(price_raw) if price_raw else {}
 
     price_min = int(price.get("price_min") or 0)
@@ -132,16 +144,20 @@ async def analyze(file: UploadFile = File(...)):
 
     # 🔥 fallback hvis AI fejler
     if price_min == 0 and price_max == 0:
-        price_min = 200
-        price_max = 800
+        if brand.lower() in ["bolia", "hay", "mater", "muuto"]:
+            price_min, price_max = 1500, 3500
+        else:
+            price_min, price_max = 200, 800
+
+    confidence = int((price.get("confidence") or 0) * 100)
 
     return {
-        "description": name,
+        "description": f"{name}\n{brand}\n{details}",
         "price_range": f"{price_min} - {price_max} kr",
-        "confidence": int((price.get("confidence") or 0) * 100)
+        "confidence": confidence
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"status": "ok", "mode": "brand-optimized"}
