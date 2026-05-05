@@ -18,10 +18,10 @@ SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 @app.get("/")
 def root():
-    return {"status": "ok - v16"}
+    return {"status": "ok - v16.1"}
 
 
-# ---------- GEMINI ----------
+# ---------- GEMINI (BEDRE BESKRIVELSE) ----------
 def identify(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -31,9 +31,18 @@ def identify(img64):
             "parts": [
                 {
                     "text": """Svar på dansk.
-Hvad er objektet? (kort navn, max 5 ord)
-Ingen forklaring.
-Eksempel: "teak spisebordsstol" """
+
+Beskriv objektet kort men præcist.
+Medtag:
+- type
+- materiale
+- farve
+- form
+
+Eksempel:
+"keramisk bordlampe med hvid stofskærm og rund fod"
+
+Ingen forklaring."""
                 },
                 {"inline_data": {"mime_type": "image/jpeg", "data": img64}}
             ]
@@ -52,7 +61,7 @@ Eksempel: "teak spisebordsstol" """
         txt = txt.lower().strip()
         txt = re.sub(r"[^\w\sæøå]", "", txt)
 
-        print("AI:", txt)
+        print("DESC:", txt)
 
         return txt
 
@@ -61,25 +70,29 @@ Eksempel: "teak spisebordsstol" """
         return None
 
 
-# ---------- MULTI SEARCH ----------
-def search_all(name):
+# ---------- BUILD QUERIES ----------
+def build_queries(desc):
 
-    queries = [
-        f"{name} dba",
-        f"{name} til salg",
-        f"{name} pris",
-        f"{name} brugt",
-        f"{name} danmark"
+    return [
+        desc,
+        desc + " lampe" if "lampe" not in desc else desc,
+        desc + " dba",
+        desc + " til salg",
+        desc + " danmark"
     ]
 
-    all_prices = []
+
+# ---------- SEARCH ----------
+def search_prices(queries):
+
+    prices = []
 
     for q in queries:
 
         print("SEARCH:", q)
 
         params = {
-            "q": q + " site:dba.dk",
+            "q": q,
             "api_key": SERP_API_KEY,
             "hl": "da",
             "gl": "dk"
@@ -98,44 +111,36 @@ def search_all(name):
                     val = int(f)
 
                     if 20 < val < 100000:
-                        all_prices.append(val)
+                        prices.append(val)
 
         except Exception as e:
             print("SEARCH ERROR:", e)
 
-    print("ALL:", all_prices)
+    print("ALL PRICES:", prices)
 
-    return all_prices
+    return prices
 
 
-# ---------- FILTER ----------
-def clean_prices(prices):
+# ---------- CLEAN ----------
+def clean(prices):
 
     if not prices:
         return []
 
     prices.sort()
-
-    # fjern ekstreme outliers
     median = prices[len(prices)//2]
 
-    cleaned = [p for p in prices if median * 0.3 < p < median * 3]
-
-    print("CLEAN:", cleaned)
-
-    return cleaned
+    return [p for p in prices if median * 0.3 < p < median * 3]
 
 
-# ---------- PRICE ----------
-def calculate(prices):
+# ---------- CALC ----------
+def calc(prices):
 
     if not prices:
         return None
 
     prices.sort()
-    median = prices[len(prices)//2]
-
-    return median
+    return prices[len(prices)//2]
 
 
 # ---------- API ----------
@@ -145,30 +150,32 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
 
     if not img:
-        return {"description": "ingen fil", "price": "-", "note": "fejl"}
+        return {"description": "-", "price": "-", "note": "fejl"}
 
     img64 = base64.b64encode(img).decode("utf-8")
 
-    name = identify(img64)
+    desc = identify(img64)
 
-    if not name or len(name) < 3:
-        name = "ukendt objekt"
+    if not desc:
+        desc = "ukendt objekt"
 
-    prices = search_all(name)
+    queries = build_queries(desc)
 
-    prices = clean_prices(prices)
+    prices = search_prices(queries)
 
-    price = calculate(prices)
+    prices = clean(prices)
+
+    price = calc(prices)
 
     if price:
-        note = "fundet via lignende"
+        note = "baseret på lignende fund"
         price_text = f"{price} kr"
     else:
-        note = "lignende - ingen direkte fund"
+        note = "ingen direkte fund – lignende"
         price_text = "ukendt"
 
     return {
-        "description": name,
+        "description": desc,
         "price": price_text,
         "note": note,
         "data_points": len(prices)
