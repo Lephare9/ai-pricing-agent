@@ -1,10 +1,9 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, json, re
+import os, base64, requests, re
 
 app = FastAPI()
 
-# ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,36 +12,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- ENV ----------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-print("STARTING APP...")
-print("GEMINI KEY:", bool(GEMINI_API_KEY))
-print("SERP KEY:", bool(SERP_API_KEY))
 
-
-# ---------- ROOT ----------
 @app.get("/")
 def root():
-    return {"status": "ok - v15.3"}
+    return {"status": "ok - v15.4"}
+
+
+# ---------- CLEAN TEXT ----------
+def clean_text(text):
+    text = text.split(".")[0]  # kun første sætning
+    text = re.sub(r"used for.*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"containing.*", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 # ---------- GEMINI ----------
-def call_gemini(image_base64):
+def call_gemini(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
         "contents": [{
             "parts": [
-                {"text": "Identify object + brand if possible. Short answer."},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                }
+                {"text": "Svar på dansk. Hvad er dette objekt? Kort navn."},
+                {"inline_data": {"mime_type": "image/jpeg", "data": img64}}
             ]
         }]
     }
@@ -50,26 +46,23 @@ def call_gemini(image_base64):
     try:
         r = requests.post(url, json=payload, timeout=15)
 
-        print("GEMINI STATUS:", r.status_code)
-        print("GEMINI RAW:", r.text[:500])
+        print("GEMINI:", r.status_code)
 
         if r.status_code != 200:
             return None
 
         data = r.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
 
-        if "candidates" not in data:
-            return None
-
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        return clean_text(text)
 
     except Exception as e:
         print("GEMINI ERROR:", e)
         return None
 
 
-# ---------- GOOGLE SEARCH ----------
-def google_prices(query):
+# ---------- SEARCH ----------
+def search_prices(query):
 
     if not SERP_API_KEY:
         return []
@@ -92,79 +85,59 @@ def google_prices(query):
         for res in data.get("organic_results", []):
             text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
 
-            matches = re.findall(r"(\d{2,5})\s*kr", text)
+            found = re.findall(r"(\d{2,6})\s*kr", text)
 
-            for m in matches:
-                val = int(m)
-                if 20 < val < 50000:
+            for f in found:
+                val = int(f)
+                if 10 < val < 100000:
                     prices.append(val)
 
     except Exception as e:
         print("SEARCH ERROR:", e)
 
-    print("RAW PRICES:", prices[:10])
+    print("ALL PRICES:", prices)
 
     return prices
 
 
-# ---------- FILTER ----------
-def filter_prices(prices):
+# ---------- FINAL PRICE ----------
+def get_price(prices):
 
     if not prices:
-        return []
+        return "ingen pris fundet"
 
-    prices = sorted(prices)
-    mid = prices[len(prices)//2]
+    prices.sort()
 
-    filtered = [p for p in prices if mid*0.5 < p < mid*2]
+    median = prices[len(prices)//2]
 
-    print("FILTERED:", filtered)
-
-    return filtered
+    return f"{median} kr"
 
 
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
-    print("REQUEST RECEIVED")
-
     img = await file.read()
-    print("IMAGE SIZE:", len(img))
 
     if not img:
-        return {
-            "description": "ingen fil",
-            "price_range": "ingen pris"
-        }
+        return {"description": "ingen fil", "price": "ingen pris"}
 
     img64 = base64.b64encode(img).decode("utf-8")
 
-    # ---------- AI IDENTIFY ----------
     name = call_gemini(img64)
 
     if not name:
         name = "ukendt produkt"
 
-    print("IDENTIFIED:", name)
+    print("NAME:", name)
 
-    # ---------- PRICE SEARCH ----------
-    prices = google_prices(name)
+    prices = search_prices(name)
+    prices += search_prices(name + " Danmark")
 
-    if not prices:
-        prices = google_prices(name + " brugt")
-
-    prices = filter_prices(prices)
-
-    # ---------- PRICE CALC ----------
-    if len(prices) >= 2:
-        avg = sum(prices) / len(prices)
-        low = int(avg * 0.9)
-        high = int(avg * 1.1)
-    else:
-        low, high = 100, 500
+    price = get_price(prices)
 
     return {
         "description": name,
-        "price_range": f"{low} - {high} kr"
+        "price": price,
+        "raw_prices": prices[:10]
     }
