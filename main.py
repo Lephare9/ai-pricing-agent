@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import os, base64, requests, json, re, time
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
@@ -13,7 +14,6 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 # ---------- GEMINI ----------
@@ -32,21 +32,12 @@ def call_gemini(prompt, image=None):
 
     payload = {"contents": [{"parts": parts}]}
 
-    for _ in range(3):
-        try:
-            r = requests.post(url, json=payload, timeout=15)
-            data = r.json()
-
-            if "candidates" not in data:
-                time.sleep(1)
-                continue
-
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-
-        except:
-            time.sleep(1)
-
-    return None
+    try:
+        r = requests.post(url, json=payload, timeout=15)
+        data = r.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except:
+        return None
 
 
 def extract_json(text):
@@ -57,33 +48,11 @@ def extract_json(text):
         return {}
 
 
-# ---------- PRICELESS ----------
-def check_priceless(image):
-
-    prompt = """
-Er dette primært:
-- et menneske
-- et ansigt
-- eller et dyr
-
-OG ikke et produkt?
-
-Svar KUN:
-YES eller NO
-"""
-
-    res = call_gemini(prompt, image)
-    return "YES" in (res or "").upper()
-
-
 # ---------- IDENTIFY ----------
 def identify(image):
 
     prompt = """
 Identificér produkt præcist.
-
-- brug brand hvis muligt
-- brug model hvis muligt
 
 Returnér JSON:
 {
@@ -97,67 +66,65 @@ Returnér JSON:
     return extract_json(raw) if raw else {}
 
 
-# ---------- SEARCH ----------
-def search(query):
+# ---------- DBA SCRAPER ----------
+def search_dba(query):
 
-    url = "https://serpapi.com/search"
-    params = {
-        "q": query,
-        "api_key": SERP_API_KEY,
-        "hl": "da",
-        "gl": "dk"
-    }
+    url = f"https://www.dba.dk/soeg/?soeg={query.replace(' ', '+')}"
+
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        results = []
+        prices = []
 
-        for res in data.get("organic_results", []):
-            text = res.get("title", "") + " " + res.get("snippet", "")
+        for p in soup.find_all(text=re.compile("kr")):
+            text = str(p)
 
-            matches = re.findall(r"(\d{2,5})\s*kr", text.lower())
+            match = re.search(r"(\d{2,5})\s*kr", text.lower())
+            if match:
+                val = int(match.group(1))
 
-            for m in matches:
-                price = int(m)
+                if 20 < val < 50000:
+                    prices.append(val)
 
-                if 20 < price < 50000:
-                    results.append({
-                        "text": text,
-                        "price": price
-                    })
+        print("DBA:", prices[:10])
 
-        return results
+        return prices[:15]
 
-    except:
+    except Exception as e:
+        print("DBA ERROR:", e)
         return []
 
 
-# ---------- AI FILTER ----------
-def filter_prices(name, results):
+# ---------- GULOGGRATIS ----------
+def search_guloggratis(query):
 
-    if not results:
-        return []
+    url = f"https://www.guloggratis.dk/s/q-{query.replace(' ', '%20')}"
 
-    prompt = f"""
-Produkt: {name}
-
-Data:
-{results}
-
-OPGAVE:
-- behold priser der KAN være samme type
-- fjern kun helt forkerte
-
-Returnér:
-[100,200,300]
-"""
-
-    raw = call_gemini(prompt)
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        return json.loads(raw)
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        prices = []
+
+        for p in soup.find_all(text=re.compile("kr")):
+            text = str(p)
+
+            match = re.search(r"(\d{2,5})\s*kr", text.lower())
+            if match:
+                val = int(match.group(1))
+
+                if 20 < val < 50000:
+                    prices.append(val)
+
+        print("GULOG:", prices[:10])
+
+        return prices[:10]
+
     except:
         return []
 
@@ -167,38 +134,20 @@ def round5(x):
     return int(round(x / 5) * 5)
 
 
-def calculate(filtered, raw):
+def calculate(prices):
 
-    # LEVEL 1 (AI filtreret)
-    if len(filtered) >= 3:
-        prices = sorted(filtered)
+    if not prices:
+        return None
 
+    prices = sorted(prices)
+
+    if len(prices) > 5:
         cut = max(1, int(len(prices) * 0.2))
-        prices = prices[cut:-cut] if len(prices) > 5 else prices
+        prices = prices[cut:-cut]
 
-        avg = sum(prices) / len(prices)
-        return round5(avg * 0.9), round5(avg * 1.1)
+    avg = sum(prices) / len(prices)
 
-    # LEVEL 2 (raw)
-    raw_prices = [r["price"] for r in raw]
-
-    if len(raw_prices) >= 3:
-        prices = sorted(raw_prices)
-
-        cut = max(1, int(len(prices) * 0.3))
-        prices = prices[cut:-cut] if len(prices) > 5 else prices
-
-        avg = sum(prices) / len(prices)
-        return round5(avg * 0.85), round5(avg * 1.15)
-
-    # LEVEL 3 (median)
-    if raw_prices:
-        prices = sorted(raw_prices)
-        mid = prices[len(prices)//2]
-
-        return round5(mid * 0.9), round5(mid * 1.1)
-
-    return None
+    return round5(avg * 0.9), round5(avg * 1.1)
 
 
 # ---------- API ----------
@@ -208,20 +157,13 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
     img64 = base64.b64encode(img).decode()
 
-    # priceless mode
-    if check_priceless(img64):
-        return {
-            "description": "wow! priceless..",
-            "price_range": "",
-            "condition": "middel stand",
-            "note": ""
-        }
-
     data = identify(img64)
 
     name = data.get("name") or ""
     brand = data.get("brand") or ""
     condition = data.get("condition") or ""
+
+    print("IDENT:", name, brand)
 
     if not name:
         return {
@@ -231,47 +173,23 @@ async def analyze(file: UploadFile = File(...)):
             "note": ""
         }
 
-    queries = [
-        f"{brand} {name} brugt til salg danmark",
-        f"{name} brugt danmark pris",
-        f"{name} lignende brugt danmark"
-    ]
+    query = f"{brand} {name}".strip()
 
-    all_results = []
+    # 🔥 DBA først
+    prices = search_dba(query)
 
-    for q in queries:
-        res = search(q)
-        if res:
-            all_results.extend(res)
+    note = ""
 
-    filtered = filter_prices(name, all_results)
+    # 🔁 fallback
+    if len(prices) < 3:
+        print("FALLBACK GULOGGRATIS")
+        more = search_guloggratis(query)
+        prices.extend(more)
 
-    result = calculate(filtered, all_results)
+        if more:
+            note = "lignende"
 
-    similar_mode = False
-
-    # 🔥 hvis stadig ingen stærk data → brug lignende
-    if not result:
-
-        similar_queries = [
-            f"{name} lignende brugt danmark",
-            f"{name} furniture used price",
-            f"{name} similar used price"
-        ]
-
-        similar_results = []
-
-        for q in similar_queries:
-            res = search(q)
-            if res:
-                similar_results.extend(res)
-
-        filtered_sim = filter_prices(name, similar_results)
-
-        result = calculate(filtered_sim, similar_results)
-
-        if result:
-            similar_mode = True
+    result = calculate(prices)
 
     if not result:
         return {
@@ -287,10 +205,10 @@ async def analyze(file: UploadFile = File(...)):
         "description": f"{name}\n{brand}",
         "price_range": f"{min_p} - {max_p} kr",
         "condition": condition,
-        "note": "lignende" if similar_mode else ""
+        "note": note
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v10.3-final"}
+    return {"status": "ok", "mode": "v11-real-data"}
