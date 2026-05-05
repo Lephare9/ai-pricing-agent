@@ -4,6 +4,7 @@ import os, base64, requests, re
 
 app = FastAPI()
 
+# ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,12 +14,11 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 @app.get("/")
 def root():
-    return {"status": "ok - v17"}
+    return {"status": "ok - v17.1 AI-first"}
 
 
 # ---------- AI BESKRIVELSE ----------
@@ -26,24 +26,24 @@ def describe(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {
-                    "text": """Svar på dansk.
+    prompt = """Svar på dansk.
 
-Beskriv objektet præcist:
+Beskriv objektet kort og præcist med:
 - type
 - materiale
 - farve
 - form
 
-Kort og konkret.
-
 Eksempel:
 "keramisk bordlampe med beige stofskærm og rund fod"
+
+Ingen forklaring.
 """
-                },
+
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
                 {"inline_data": {"mime_type": "image/jpeg", "data": img64}}
             ]
         }]
@@ -52,8 +52,10 @@ Eksempel:
     try:
         r = requests.post(url, json=payload, timeout=15)
 
+        print("DESC STATUS:", r.status_code)
+
         if r.status_code != 200:
-            return None
+            return "ukendt objekt"
 
         data = r.json()
         txt = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -67,7 +69,7 @@ Eksempel:
 
     except Exception as e:
         print("DESC ERROR:", e)
-        return None
+        return "ukendt objekt"
 
 
 # ---------- AI PRIS ----------
@@ -81,7 +83,56 @@ Du er ekspert i brugtpriser i Danmark.
 Vurder realistisk pris på:
 {desc}
 
-Svar kun med ét tal i kroner.
+Svar kun med ét tal i danske kroner.
+Ingen forklaring.
+"""
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=12)
+
+        print("PRICE STATUS:", r.status_code)
+
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        txt = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        match = re.findall(r"\d+", txt)
+
+        if match:
+            val = int(match[0])
+            print("AI PRICE:", val)
+            return val
+
+        return None
+
+    except Exception as e:
+        print("PRICE ERROR:", e)
+        return None
+
+
+# ---------- STAND / NOTE ----------
+def generate_note(desc):
+
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+    prompt = f"""
+Giv en MEGET kort vurdering af stand for:
+{desc}
+
+Eksempler:
+"middel stand"
+"små brugsspor"
+"god stand"
+
+Kun 2-4 ord.
 """
 
     payload = {
@@ -94,88 +145,18 @@ Svar kun med ét tal i kroner.
         r = requests.post(url, json=payload, timeout=10)
 
         if r.status_code != 200:
-            return None
+            return "middel stand"
 
         data = r.json()
         txt = data["candidates"][0]["content"]["parts"][0]["text"]
 
-        val = int(re.findall(r"\d+", txt)[0])
+        txt = txt.lower().strip()
+        txt = re.sub(r"[^\w\sæøå ]", "", txt)
 
-        print("AI PRICE:", val)
-
-        return val
+        return txt
 
     except:
-        return None
-
-
-# ---------- BUILD SEARCH ----------
-def build_queries(desc):
-
-    return [
-        desc,
-        desc + " dba",
-        desc + " til salg",
-        desc + " danmark",
-    ]
-
-
-# ---------- SEARCH ----------
-def search_prices(queries):
-
-    prices = []
-
-    for q in queries:
-
-        params = {
-            "q": q,
-            "api_key": SERP_API_KEY,
-            "hl": "da",
-            "gl": "dk"
-        }
-
-        try:
-            r = requests.get("https://serpapi.com/search", params=params, timeout=10)
-            data = r.json()
-
-            for res in data.get("organic_results", []):
-                text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
-
-                found = re.findall(r"(\d{2,6})\s*kr", text)
-
-                for f in found:
-                    val = int(f)
-                    if 20 < val < 100000:
-                        prices.append(val)
-
-        except Exception as e:
-            print("SEARCH ERROR:", e)
-
-    print("DATA PRICES:", prices)
-
-    return prices
-
-
-# ---------- CLEAN ----------
-def clean(prices):
-
-    if not prices:
-        return []
-
-    prices.sort()
-    median = prices[len(prices)//2]
-
-    return [p for p in prices if median * 0.3 < p < median * 3]
-
-
-# ---------- CALC ----------
-def calc(prices):
-
-    if not prices:
-        return None
-
-    prices.sort()
-    return prices[len(prices)//2]
+        return "middel stand"
 
 
 # ---------- API ----------
@@ -185,40 +166,28 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
 
     if not img:
-        return {"description": "-", "price": "-", "note": "fejl"}
+        return {
+            "description": "-",
+            "price": "-",
+            "note": "fejl"
+        }
 
     img64 = base64.b64encode(img).decode("utf-8")
 
-    # 🔥 1. BESKRIVELSE
+    # 🔥 BESKRIVELSE
     desc = describe(img64)
 
-    if not desc:
-        desc = "ukendt objekt"
+    # 🔥 PRIS (ALTID)
+    price = ai_price(desc)
 
-    # 🔥 2. DATA SEARCH
-    queries = build_queries(desc)
-    prices = search_prices(queries)
-    prices = clean(prices)
+    if not price:
+        price = 200  # sidste fallback (aldrig tom)
 
-    data_price = calc(prices)
-
-    # 🔥 3. AI FALLBACK
-    ai_est = ai_price(desc)
-
-    # 🔥 4. FINAL LOGIK
-    if data_price:
-        final = data_price
-        note = "baseret på lignende fund"
-    elif ai_est:
-        final = ai_est
-        note = "AI vurdering (ingen fund)"
-    else:
-        final = "ukendt"
-        note = "ingen data"
+    # 🔥 NOTE
+    note = generate_note(desc)
 
     return {
         "description": desc,
-        "price": f"{final} kr" if isinstance(final, int) else final,
-        "note": note,
-        "data_points": len(prices)
+        "price": f"{price} kr",
+        "note": note
     }
