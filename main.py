@@ -83,7 +83,7 @@ Regler:
     return call_gemini(prompt, image_base64)
 
 
-# ---------- STEP 2: GENERATE PRICE LIST ----------
+# ---------- STEP 2: PRICE LIST ----------
 def generate_price_list(name, brand):
 
     prompt = f"""
@@ -114,19 +114,17 @@ Returnér KUN JSON:
 def compute_price(prices, brand):
 
     if not prices or len(prices) < 3:
-        return 100, 400, 50  # fallback (sjældent)
+        return 100, 300, 50
 
     avg = sum(prices) / len(prices)
 
-    if brand.lower() != "ukendt":
-        spread = 0.25
-        confidence = 80
-    else:
-        spread = 0.15
-        confidence = 65
+    # 🔥 FAST 10% RANGE
+    spread = 0.10
 
     price_min = int(avg * (1 - spread))
     price_max = int(avg * (1 + spread))
+
+    confidence = 85 if brand.lower() != "ukendt" else 70
 
     return price_min, price_max, confidence
 
@@ -166,4 +164,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v6-market-sim"}
+    return {"status": "ok", "mode": "v6-final"}
