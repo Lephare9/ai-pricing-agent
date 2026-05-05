@@ -21,7 +21,6 @@ def call_gemini(prompt, image_base64=None):
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     parts = [{"text": prompt}]
-
     if image_base64:
         parts.append({
             "inline_data": {
@@ -73,18 +72,8 @@ Returnér KUN JSON:
 
 {
   "name": "",
-  "brand": "",
-  "category": ""
+  "brand": ""
 }
-
-Kategorier:
-- computer accessory
-- furniture
-- lamp
-- decor
-- kitchen
-- hobby
-- other
 
 Regler:
 - vær konkret
@@ -94,59 +83,52 @@ Regler:
     return call_gemini(prompt, image_base64)
 
 
-# ---------- STEP 2: SMART PRICE (TEKST ONLY) ----------
-def estimate_price_ai(name, brand):
+# ---------- STEP 2: GENERATE PRICE LIST ----------
+def generate_price_list(name, brand):
 
     prompt = f"""
-Find realistisk brugtpris i Danmark.
+Find 8-15 realistiske brugtpriser i Danmark.
 
 Produkt: {name}
 Brand: {brand}
 
-Tænk som DBA / Facebook Marketplace.
+REGLER:
+- basér på DBA / marketplace niveau
+- brug både solgte og til salg
+- hvis ukendt brand → brug lignende produkter
+- hvis kendt brand → brug identiske
+- undgå ekstreme outliers
 
 Returnér KUN JSON:
 
 {{
-  "price_min": 0,
-  "price_max": 0,
+  "prices": [100,150,200,250],
   "confidence": 0.0
 }}
-
-REGLER:
-- brug typiske brugtpriser i DK
-- hvis billigt objekt → lav pris (20–300 kr)
-- hvis design → højere
-- snævert interval (max 30%)
-- hvis ukendt → realistisk gennemsnit
 """
 
     return call_gemini(prompt)
 
 
-# ---------- FALLBACK ----------
-def fallback_price(category, name):
+# ---------- PRICE CALC ----------
+def compute_price(prices, brand):
 
-    category = category.lower()
-    name = name.lower()
+    if not prices or len(prices) < 3:
+        return 100, 400, 50  # fallback (sjældent)
 
-    if any(x in name for x in ["mus", "mouse"]):
-        return 50, 200
+    avg = sum(prices) / len(prices)
 
-    if any(x in name for x in ["raflebæger", "terning", "dice"]):
-        return 100, 300
+    if brand.lower() != "ukendt":
+        spread = 0.25
+        confidence = 80
+    else:
+        spread = 0.15
+        confidence = 65
 
-    base = {
-        "computer accessory": (50, 300),
-        "furniture": (300, 2000),
-        "lamp": (100, 1500),
-        "decor": (50, 600),
-        "kitchen": (50, 500),
-        "hobby": (50, 300),
-        "other": (80, 500)
-    }
+    price_min = int(avg * (1 - spread))
+    price_max = int(avg * (1 + spread))
 
-    return base.get(category, (80, 500))
+    return price_min, price_max, confidence
 
 
 # ---------- API ----------
@@ -162,20 +144,18 @@ async def analyze(file: UploadFile = File(...)):
 
     name = identity.get("name") or "Ukendt produkt"
     brand = identity.get("brand") or "ukendt"
-    category = identity.get("category") or "other"
 
-    # STEP 2 (AI PRICE)
-    price_raw = estimate_price_ai(name, brand)
-    price = extract_json(price_raw) if price_raw else {}
+    # STEP 2
+    price_raw = generate_price_list(name, brand)
+    price_data = extract_json(price_raw) if price_raw else {}
 
-    price_min = int(price.get("price_min") or 0)
-    price_max = int(price.get("price_max") or 0)
-    confidence = int((price.get("confidence") or 0) * 100)
+    prices = price_data.get("prices", [])
+    confidence_ai = int((price_data.get("confidence") or 0) * 100)
 
-    # FALLBACK hvis AI fejler
-    if price_min == 0 or price_max == 0:
-        price_min, price_max = fallback_price(category, name)
-        confidence = 60
+    # STEP 3
+    price_min, price_max, confidence_calc = compute_price(prices, brand)
+
+    confidence = max(confidence_ai, confidence_calc)
 
     return {
         "description": f"{name}\n{brand}",
@@ -186,4 +166,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v4-hybrid"}
+    return {"status": "ok", "mode": "v6-market-sim"}
