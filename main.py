@@ -15,6 +15,16 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+DESIGNER_BRANDS = [
+    "wegner", "hans j wegner",
+    "arne jacobsen",
+    "børge mogensen",
+    "finn juhl",
+    "verner panton",
+    "hay",
+    "muuto"
+]
+
 
 # ---------- GEMINI ----------
 def call_gemini(prompt, image=None):
@@ -47,23 +57,24 @@ def extract_json(text):
         return {}
 
 
-# ---------- IDENTIFY (V12.3) ----------
+# ---------- IDENTIFY (VISUAL) ----------
 def identify(image):
 
     prompt = """
-Identificér produkt fra billede.
+Du er ekspert i designmøbler og visuel genkendelse.
 
-KRAV:
-- find brand hvis muligt (fx IKEA, Hay, Wegner, Nike)
-- hvis ikke synligt → gæt ud fra design
-- brug realistisk titel som DBA
+Analyser billedet meget detaljeret.
 
 Returnér KUN JSON:
+
 {
  "name": "",
  "brand": "",
- "condition": "",
- "category": ""
+ "model": "",
+ "category": "",
+ "material": "",
+ "shape": "",
+ "style": ""
 }
 
 Kategorier:
@@ -76,17 +87,51 @@ small_item, book, art, vehicle, electronics
 
     data = extract_json(raw)
 
-    # 🔥 fallback brand fra navn
+    if not data:
+        data = {}
+
     if not data.get("brand") and data.get("name"):
         words = data["name"].split()
         if len(words) > 1:
             data["brand"] = words[0]
 
+    if data.get("brand") and data.get("model"):
+        data["name"] = f"{data['brand']} {data['model']}"
+
     return data
 
 
+# ---------- BUILD QUERY ----------
+def build_query(data):
+
+    parts = []
+
+    if data.get("brand"):
+        parts.append(data["brand"])
+
+    if data.get("name"):
+        parts.append(data["name"])
+
+    if data.get("material"):
+        parts.append(data["material"])
+
+    if data.get("shape"):
+        parts.append(data["shape"])
+
+    if data.get("style"):
+        parts.append(data["style"])
+
+    parts.append("danmark brugt")
+
+    query = " ".join(parts)
+
+    print("QUERY:", query)
+
+    return query
+
+
 # ---------- SEARCH ----------
-def search_dba_precise(query, name, brand):
+def search_dba(query, name, brand):
 
     url = f"https://www.dba.dk/soeg/?soeg={query.replace(' ', '+')}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -111,11 +156,9 @@ def search_dba_precise(query, name, brand):
 
             score = 0
 
-            # 🔥 brand boost
             if brand and brand.lower() in text:
                 score += 4
 
-            # 🔥 navn match
             for word in name.lower().split():
                 if word in text:
                     score += 1
@@ -131,19 +174,17 @@ def search_dba_precise(query, name, brand):
 
         return prices[:15]
 
-    except Exception as e:
-        print("DBA ERROR:", e)
+    except:
         return []
 
 
-# ---------- SMART FILTER ----------
+# ---------- FILTER ----------
 def smart_filter(prices, brand):
 
     if not prices:
         return []
 
     prices = sorted(prices)
-
     median = prices[len(prices)//2]
 
     filtered = []
@@ -157,8 +198,6 @@ def smart_filter(prices, brand):
 
     if brand:
         filtered = [p for p in filtered if p > median * 0.6]
-
-    print("FILTERED:", filtered)
 
     return filtered
 
@@ -178,7 +217,7 @@ def calc_range(prices):
     return round5(avg * 0.9), round5(avg * 1.1)
 
 
-# ---------- CATEGORY ROUTING ----------
+# ---------- CATEGORY ----------
 def handle_category(data):
 
     name = data.get("name", "")
@@ -186,9 +225,6 @@ def handle_category(data):
     category = data.get("category", "")
     condition = data.get("condition", "")
 
-    print("CATEGORY:", category)
-
-    # 🔴 BLOCK
     if category in ["vehicle", "electronics"]:
         return {
             "description": f"{name}\n{brand}",
@@ -197,64 +233,53 @@ def handle_category(data):
             "note": "special kategori"
         }
 
-    # 👕 GENERIC CLOTHING
     if category == "clothing_generic":
         return {
-            "description": f"{name}",
+            "description": name,
             "price_range": "50 - 150 kr",
             "condition": condition,
             "note": ""
         }
 
-    # 📚 BOOK
     if category == "book":
         return {
-            "description": f"{name}",
+            "description": name,
             "price_range": "10 - 100 kr",
             "condition": condition,
             "note": ""
         }
 
-    # 🧸 SMALL ITEM
     if category == "small_item":
-        prices = search_dba_precise(name, name, brand)
+        prices = search_dba(name, name, brand)
         prices = [p for p in prices if p < 500]
-
         prices = smart_filter(prices, brand)
 
         result = calc_range(prices)
 
         if result:
             return {
-                "description": f"{name}",
+                "description": name,
                 "price_range": f"{result[0]} - {result[1]} kr",
                 "condition": condition,
                 "note": ""
             }
 
         return {
-            "description": f"{name}",
+            "description": name,
             "price_range": "20 - 300 kr",
             "condition": condition,
             "note": "lignende"
         }
 
-    # 🪑 CORE (furniture / decor / art / branded clothing)
+    # 🔥 CORE (visual search)
+    query = build_query(data)
 
-    if brand:
-        query = f"{brand} {name} brugt danmark"
-    else:
-        query = f"{name} brugt danmark"
-
-    prices = search_dba_precise(query, name, brand)
-
+    prices = search_dba(query, name, brand)
     prices = smart_filter(prices, brand)
 
-    # 🔥 brand → drop lav støj
-    if brand:
-        prices = [p for p in prices if p > 500]
-
-    print("FINAL PRICES:", prices)
+    # designer boost
+    if brand and brand.lower() in DESIGNER_BRANDS:
+        prices = [p for p in prices if p > 800]
 
     result = calc_range(prices)
 
@@ -267,8 +292,7 @@ def handle_category(data):
         }
 
     # fallback
-    prices = search_dba_precise(name, name, "")
-
+    prices = search_dba(name, name, "")
     prices = smart_filter(prices, "")
 
     result = calc_range(prices)
@@ -281,7 +305,6 @@ def handle_category(data):
             "note": "lignende"
         }
 
-    # sidste fallback
     return {
         "description": f"{name}\n{brand}",
         "price_range": "100 - 500 kr",
@@ -312,4 +335,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v12.3"}
+    return {"status": "ok", "mode": "v14-visual"}
