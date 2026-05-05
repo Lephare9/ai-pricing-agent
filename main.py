@@ -15,26 +15,24 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- GEMINI CALL ----------
-def call_gemini(prompt, image_base64):
+# ---------- GEMINI ----------
+def call_gemini(prompt, image_base64=None):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                }
-            ]
-        }]
-    }
+    parts = [{"text": prompt}]
 
-    for _ in range(2):  # retry
+    if image_base64:
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": image_base64
+            }
+        })
+
+    payload = {"contents": [{"parts": parts}]}
+
+    for _ in range(2):
         try:
             res = requests.post(url, json=payload, timeout=20)
             data = res.json()
@@ -53,7 +51,7 @@ def call_gemini(prompt, image_base64):
     return None
 
 
-# ---------- JSON PARSER ----------
+# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -69,7 +67,7 @@ def extract_json(text):
 def identify_object(image_base64):
 
     prompt = """
-Identificér objekt præcist.
+Identificér produktet præcist.
 
 Returnér KUN JSON:
 
@@ -84,43 +82,71 @@ Kategorier:
 - furniture
 - lamp
 - decor
+- kitchen
+- hobby
 - other
 
 Regler:
 - vær konkret
-- find brand hvis muligt
+- find model hvis muligt
 """
 
     return call_gemini(prompt, image_base64)
 
 
-# ---------- PRICE ENGINE ----------
-def estimate_price(category, brand):
+# ---------- STEP 2: SMART PRICE (TEKST ONLY) ----------
+def estimate_price_ai(name, brand):
+
+    prompt = f"""
+Find realistisk brugtpris i Danmark.
+
+Produkt: {name}
+Brand: {brand}
+
+Tænk som DBA / Facebook Marketplace.
+
+Returnér KUN JSON:
+
+{{
+  "price_min": 0,
+  "price_max": 0,
+  "confidence": 0.0
+}}
+
+REGLER:
+- brug typiske brugtpriser i DK
+- hvis billigt objekt → lav pris (20–300 kr)
+- hvis design → højere
+- snævert interval (max 30%)
+- hvis ukendt → realistisk gennemsnit
+"""
+
+    return call_gemini(prompt)
+
+
+# ---------- FALLBACK ----------
+def fallback_price(category, name):
+
+    category = category.lower()
+    name = name.lower()
+
+    if any(x in name for x in ["mus", "mouse"]):
+        return 50, 200
+
+    if any(x in name for x in ["raflebæger", "terning", "dice"]):
+        return 100, 300
 
     base = {
         "computer accessory": (50, 300),
         "furniture": (300, 2000),
         "lamp": (100, 1500),
-        "decor": (50, 800),
-        "other": (100, 1000)
+        "decor": (50, 600),
+        "kitchen": (50, 500),
+        "hobby": (50, 300),
+        "other": (80, 500)
     }
 
-    price_min, price_max = base.get(category, (100, 1000))
-
-    brand = brand.lower()
-
-    premium = ["bolia", "hay", "mater", "muuto", "fritz hansen"]
-    cheap = ["ikea"]
-
-    if brand in premium:
-        price_min *= 2
-        price_max *= 2.5
-
-    elif brand in cheap:
-        price_min *= 0.6
-        price_max *= 0.7
-
-    return int(price_min), int(price_max)
+    return base.get(category, (80, 500))
 
 
 # ---------- API ----------
@@ -138,21 +164,26 @@ async def analyze(file: UploadFile = File(...)):
     brand = identity.get("brand") or "ukendt"
     category = identity.get("category") or "other"
 
-    # STEP 2 (AI price – hvis muligt)
-    price_min = 0
-    price_max = 0
+    # STEP 2 (AI PRICE)
+    price_raw = estimate_price_ai(name, brand)
+    price = extract_json(price_raw) if price_raw else {}
 
-    # fallback til kategori-baseret
-    if price_min == 0:
-        price_min, price_max = estimate_price(category, brand)
+    price_min = int(price.get("price_min") or 0)
+    price_max = int(price.get("price_max") or 0)
+    confidence = int((price.get("confidence") or 0) * 100)
+
+    # FALLBACK hvis AI fejler
+    if price_min == 0 or price_max == 0:
+        price_min, price_max = fallback_price(category, name)
+        confidence = 60
 
     return {
         "description": f"{name}\n{brand}",
         "price_range": f"{price_min} - {price_max} kr",
-        "confidence": 70  # stabil default
+        "confidence": confidence
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v2-stable"}
+    return {"status": "ok", "mode": "v4-hybrid"}
