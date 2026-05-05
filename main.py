@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, json, re, time
+import os, base64, requests, json, re
 
 app = FastAPI()
 
@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
-# ---------- GEMINI ----------
+# ---------- GEMINI IDENTIFY ----------
 def call_gemini(prompt, image_base64=None):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -47,7 +47,6 @@ def call_gemini(prompt, image_base64=None):
         return None
 
 
-# ---------- PARSE ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -58,7 +57,6 @@ def extract_json(text):
         return {}
 
 
-# ---------- IDENTIFY ----------
 def identify_object(image_base64):
 
     prompt = """
@@ -68,21 +66,15 @@ Returnér KUN JSON:
 
 {
   "name": "",
-  "brand": "",
-  "type": ""
+  "brand": ""
 }
-
-Regler:
-- inkluder model hvis muligt
-- hvis ukendt brand → skriv ""
-- vær kort og konkret
 """
 
     return call_gemini(prompt, image_base64)
 
 
-# ---------- SEARCH ----------
-def search_prices(query):
+# ---------- SEARCH + SCORE ----------
+def search_prices_scored(query):
 
     url = "https://serpapi.com/search"
 
@@ -97,80 +89,84 @@ def search_prices(query):
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
 
-        prices = []
+        results = []
 
         for r in data.get("organic_results", []):
             text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
 
             found = re.findall(r"(\d{2,5})\s?kr", text)
 
+            score = 0
+
+            if "dba" in text:
+                score += 3
+            if "brugt" in text:
+                score += 2
+            if "til salg" in text:
+                score += 1
+            if "nypris" in text:
+                score -= 3
+            if "shop" in text:
+                score -= 2
+
             for p in found:
                 val = int(p)
                 if 20 < val < 50000:
-                    prices.append(val)
+                    results.append((val, score))
 
-        return prices[:20]
+        return results
 
     except Exception as e:
         print("SEARCH ERROR:", e)
         return []
 
 
-# ---------- CLEAN ----------
-def clean_prices(prices):
+# ---------- FILTER ----------
+def process_prices(results, name, brand):
 
-    if len(prices) < 5:
-        return prices
+    if not results:
+        return []
 
-    prices.sort()
+    # behold kun relevante
+    results = [r for r in results if r[1] >= 0]
 
-    cut = max(1, int(len(prices) * 0.2))
+    # sorter efter score
+    results.sort(key=lambda x: x[1], reverse=True)
 
-    return prices[cut:-cut]
+    # top hits
+    results = results[:10]
+
+    prices = [r[0] for r in results]
+
+    # 🔥 design boost
+    if any(k in (name + brand).lower() for k in ["bolia","hay","muuto","fritz","mater","wegner"]):
+        prices = [p for p in prices if p > 500]
+
+    # 🔥 fjern outliers
+    if len(prices) >= 5:
+        prices.sort()
+        cut = int(len(prices) * 0.2)
+        prices = prices[cut:-cut]
+
+    return prices
 
 
-# ---------- ROUND ----------
+# ---------- FINAL CALC ----------
 def round5(x):
     return int(round(x / 5) * 5)
 
 
-# ---------- CALC ----------
-def compute_range(prices):
+def compute_final(prices):
 
     if len(prices) < 3:
         return 100, 300, 50
 
-    prices = clean_prices(prices)
-
     avg = sum(prices) / len(prices)
 
-    spread = 0.10
+    min_p = round5(avg * 0.9)
+    max_p = round5(avg * 1.1)
 
-    min_p = round5(avg * (1 - spread))
-    max_p = round5(avg * (1 + spread))
-
-    return min_p, max_p, 90
-
-
-# ---------- AI FALLBACK ----------
-def fallback_ai(name, brand):
-
-    prompt = f"""
-Find 8 realistiske brugtpriser i Danmark.
-
-Produkt: {name}
-Brand: {brand}
-
-Returnér JSON:
-{{
- "prices": [100,200,300]
-}}
-"""
-
-    raw = call_gemini(prompt)
-    data = extract_json(raw) if raw else {}
-
-    return data.get("prices", [])
+    return min_p, max_p, 95
 
 
 # ---------- API ----------
@@ -180,28 +176,21 @@ async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    # STEP 1 IDENTIFY
+    # STEP 1: IDENTIFY
     identity_raw = identify_object(base64_image)
     identity = extract_json(identity_raw) if identity_raw else {}
 
-    name = identity.get("name") or "Ukendt produkt"
+    name = identity.get("name") or "produkt"
     brand = identity.get("brand") or ""
 
-    # STEP 2 QUERY (🔥 vigtig!)
-    if brand:
-        query = f"{brand} {name} brugt til salg dba danmark"
-    else:
-        query = f"{name} brugt til salg danmark"
+    # STEP 2: SEARCH
+    query = f"{brand} {name} brugt til salg dba danmark"
+    results = search_prices_scored(query)
 
-    # STEP 3 SEARCH
-    prices = search_prices(query)
+    prices = process_prices(results, name, brand)
 
-    # STEP 4 FALLBACK
-    if len(prices) < 3:
-        prices = fallback_ai(name, brand)
-
-    # STEP 5 CALC
-    price_min, price_max, confidence = compute_range(prices)
+    # STEP 3: CALC
+    price_min, price_max, confidence = compute_final(prices)
 
     return {
         "description": f"{name}\n{brand}",
@@ -212,4 +201,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v8.1-extreme"}
+    return {"status": "ok", "mode": "v9-pro"}
