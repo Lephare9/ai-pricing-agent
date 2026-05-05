@@ -4,7 +4,6 @@ import os, base64, requests, re
 
 app = FastAPI()
 
-# ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,11 +18,11 @@ SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 @app.get("/")
 def root():
-    return {"status": "ok - v16.2"}
+    return {"status": "ok - v17"}
 
 
-# ---------- GEMINI (DETALJERET BESKRIVELSE) ----------
-def identify(img64):
+# ---------- AI BESKRIVELSE ----------
+def describe(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
@@ -33,16 +32,17 @@ def identify(img64):
                 {
                     "text": """Svar på dansk.
 
-Beskriv objektet kort og præcist med:
+Beskriv objektet præcist:
 - type
 - materiale
 - farve
 - form
 
-Eksempel:
-"keramisk bordlampe med hvid stofskærm og rund base"
+Kort og konkret.
 
-Ingen forklaring."""
+Eksempel:
+"keramisk bordlampe med beige stofskærm og rund fod"
+"""
                 },
                 {"inline_data": {"mime_type": "image/jpeg", "data": img64}}
             ]
@@ -66,35 +66,70 @@ Ingen forklaring."""
         return txt
 
     except Exception as e:
-        print("AI ERROR:", e)
+        print("DESC ERROR:", e)
         return None
 
 
-# ---------- BUILD QUERIES ----------
+# ---------- AI PRIS ----------
+def ai_price(desc):
+
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+    prompt = f"""
+Du er ekspert i brugtpriser i Danmark.
+
+Vurder realistisk pris på:
+{desc}
+
+Svar kun med ét tal i kroner.
+"""
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        txt = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        val = int(re.findall(r"\d+", txt)[0])
+
+        print("AI PRICE:", val)
+
+        return val
+
+    except:
+        return None
+
+
+# ---------- BUILD SEARCH ----------
 def build_queries(desc):
 
     return [
         desc,
-        desc + " lampe" if "lampe" not in desc else desc,
         desc + " dba",
         desc + " til salg",
-        desc + " danmark"
+        desc + " danmark",
     ]
 
 
-# ---------- SEARCH (FIXED) ----------
+# ---------- SEARCH ----------
 def search_prices(queries):
 
     prices = []
 
     for q in queries:
 
-        print("SEARCH:", q)
-
         params = {
             "q": q,
             "api_key": SERP_API_KEY,
-            "engine": "google",
             "hl": "da",
             "gl": "dk"
         }
@@ -103,17 +138,6 @@ def search_prices(queries):
             r = requests.get("https://serpapi.com/search", params=params, timeout=10)
             data = r.json()
 
-            # 🔥 SHOPPING RESULTS (bedste)
-            for item in data.get("shopping_results", []):
-                price_str = item.get("price", "")
-
-                match = re.findall(r"(\d+)", price_str.replace(".", ""))
-                for m in match:
-                    val = int(m)
-                    if 20 < val < 100000:
-                        prices.append(val)
-
-            # 🔥 FALLBACK (organic)
             for res in data.get("organic_results", []):
                 text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
 
@@ -127,7 +151,7 @@ def search_prices(queries):
         except Exception as e:
             print("SEARCH ERROR:", e)
 
-    print("ALL PRICES:", prices)
+    print("DATA PRICES:", prices)
 
     return prices
 
@@ -141,11 +165,7 @@ def clean(prices):
     prices.sort()
     median = prices[len(prices)//2]
 
-    cleaned = [p for p in prices if median * 0.3 < p < median * 3]
-
-    print("CLEAN:", cleaned)
-
-    return cleaned
+    return [p for p in prices if median * 0.3 < p < median * 3]
 
 
 # ---------- CALC ----------
@@ -165,37 +185,40 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
 
     if not img:
-        return {
-            "description": "-",
-            "price": "-",
-            "note": "fejl"
-        }
+        return {"description": "-", "price": "-", "note": "fejl"}
 
     img64 = base64.b64encode(img).decode("utf-8")
 
-    desc = identify(img64)
+    # 🔥 1. BESKRIVELSE
+    desc = describe(img64)
 
     if not desc:
         desc = "ukendt objekt"
 
+    # 🔥 2. DATA SEARCH
     queries = build_queries(desc)
-
     prices = search_prices(queries)
-
     prices = clean(prices)
 
-    price = calc(prices)
+    data_price = calc(prices)
 
-    if price:
+    # 🔥 3. AI FALLBACK
+    ai_est = ai_price(desc)
+
+    # 🔥 4. FINAL LOGIK
+    if data_price:
+        final = data_price
         note = "baseret på lignende fund"
-        price_text = f"{price} kr"
+    elif ai_est:
+        final = ai_est
+        note = "AI vurdering (ingen fund)"
     else:
-        note = "lignende - ingen direkte fund"
-        price_text = "ukendt"
+        final = "ukendt"
+        note = "ingen data"
 
     return {
         "description": desc,
-        "price": price_text,
+        "price": f"{final} kr" if isinstance(final, int) else final,
         "note": note,
         "data_points": len(prices)
     }
