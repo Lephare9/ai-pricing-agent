@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, json, re
+import os, base64, requests, json, re, time
 
 app = FastAPI()
 
@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
-# ---------- GEMINI IDENTIFY ----------
+# ---------- GEMINI ----------
 def call_gemini(prompt, image_base64=None):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -32,19 +32,23 @@ def call_gemini(prompt, image_base64=None):
 
     payload = {"contents": [{"parts": parts}]}
 
-    try:
-        res = requests.post(url, json=payload, timeout=15)
-        data = res.json()
+    for _ in range(3):
+        try:
+            res = requests.post(url, json=payload, timeout=15)
+            data = res.json()
 
-        if "candidates" not in data:
-            print("GEMINI ERROR:", data)
-            return None
+            if "candidates" not in data:
+                print("GEMINI ERROR:", data)
+                time.sleep(1)
+                continue
 
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+            return data["candidates"][0]["content"]["parts"][0]["text"]
 
-    except Exception as e:
-        print("ERROR:", e)
-        return None
+        except Exception as e:
+            print("ERROR:", e)
+            time.sleep(1)
+
+    return None
 
 
 def extract_json(text):
@@ -57,24 +61,27 @@ def extract_json(text):
         return {}
 
 
-def identify_object(image_base64):
+# ---------- IDENTIFY ----------
+def identify(image_base64):
 
     prompt = """
-Identificér produkt meget præcist.
+Identificér produkt og stand.
 
 Returnér KUN JSON:
 
 {
   "name": "",
-  "brand": ""
+  "brand": "",
+  "condition": ""
 }
 """
 
-    return call_gemini(prompt, image_base64)
+    raw = call_gemini(prompt, image_base64)
+    return extract_json(raw) if raw else {}
 
 
-# ---------- SEARCH + SCORE ----------
-def search_prices_scored(query):
+# ---------- SEARCH ----------
+def search_prices(query):
 
     url = "https://serpapi.com/search"
 
@@ -89,116 +96,119 @@ def search_prices_scored(query):
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
 
-        results = []
+        prices = []
 
         for r in data.get("organic_results", []):
             text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
 
-            found = re.findall(r"(\d{2,5})\s?kr", text)
+            # fanger flere formater
+            matches = re.findall(r"(\d{2,5})[\s.,-]*kr|kr[\s]*(\d{2,5})", text)
 
-            score = 0
+            for m in matches:
+                val = int(m[0] or m[1])
 
-            if "dba" in text:
-                score += 3
-            if "brugt" in text:
-                score += 2
-            if "til salg" in text:
-                score += 1
-            if "nypris" in text:
-                score -= 3
-            if "shop" in text:
-                score -= 2
-
-            for p in found:
-                val = int(p)
                 if 20 < val < 50000:
-                    results.append((val, score))
+                    prices.append(val)
 
-        return results
+        print("RAW PRICES:", prices)
+
+        return prices
 
     except Exception as e:
         print("SEARCH ERROR:", e)
         return []
 
 
-# ---------- FILTER ----------
-def process_prices(results, name, brand):
+# ---------- CLEAN ----------
+def clean_prices(prices):
 
-    if not results:
-        return []
+    if len(prices) < 3:
+        return prices
 
-    # behold kun relevante
-    results = [r for r in results if r[1] >= 0]
+    prices.sort()
 
-    # sorter efter score
-    results.sort(key=lambda x: x[1], reverse=True)
+    # fjern ekstreme værdier (top/bund)
+    cut = max(1, int(len(prices) * 0.2))
 
-    # top hits
-    results = results[:10]
+    cleaned = prices[cut:-cut] if len(prices) > 5 else prices
 
-    prices = [r[0] for r in results]
+    print("CLEANED:", cleaned)
 
-    # 🔥 design boost
-    if any(k in (name + brand).lower() for k in ["bolia","hay","muuto","fritz","mater","wegner"]):
-        prices = [p for p in prices if p > 500]
-
-    # 🔥 fjern outliers
-    if len(prices) >= 5:
-        prices.sort()
-        cut = int(len(prices) * 0.2)
-        prices = prices[cut:-cut]
-
-    return prices
+    return cleaned
 
 
-# ---------- FINAL CALC ----------
+# ---------- CALC ----------
 def round5(x):
     return int(round(x / 5) * 5)
 
 
-def compute_final(prices):
+def compute(prices):
 
     if len(prices) < 3:
-        return 100, 300, 50
+        return None  # 🔥 INGEN fallback
 
     avg = sum(prices) / len(prices)
 
     min_p = round5(avg * 0.9)
     max_p = round5(avg * 1.1)
 
-    return min_p, max_p, 95
+    return min_p, max_p
 
 
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
+    print("MODE: CLEAN V9.2")
+
     image_bytes = await file.read()
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-    # STEP 1: IDENTIFY
-    identity_raw = identify_object(base64_image)
-    identity = extract_json(identity_raw) if identity_raw else {}
+    # IDENTIFY
+    data = identify(base64_image)
 
-    name = identity.get("name") or "produkt"
-    brand = identity.get("brand") or ""
+    name = data.get("name") or ""
+    brand = data.get("brand") or ""
+    condition = data.get("condition") or ""
 
-    # STEP 2: SEARCH
-    query = f"{brand} {name} brugt til salg dba danmark"
-    results = search_prices_scored(query)
+    print("IDENTIFIED:", name, brand)
 
-    prices = process_prices(results, name, brand)
+    if not name:
+        return {
+            "description": "Kunne ikke genkende produkt",
+            "price_range": "Ingen pris fundet",
+            "condition": ""
+        }
 
-    # STEP 3: CALC
-    price_min, price_max, confidence = compute_final(prices)
+    # QUERY
+    query = f"{brand} {name} pris brugt danmark"
+
+    print("QUERY:", query)
+
+    # SEARCH
+    prices = search_prices(query)
+
+    prices = clean_prices(prices)
+
+    # CALC
+    result = compute(prices)
+
+    if not result:
+        return {
+            "description": f"{name}\n{brand}",
+            "price_range": "Ingen pris fundet",
+            "condition": condition
+        }
+
+    min_p, max_p = result
 
     return {
         "description": f"{name}\n{brand}",
-        "price_range": f"{price_min} - {price_max} kr",
-        "confidence": confidence
+        "price_range": f"{min_p} - {max_p} kr",
+        "condition": condition
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v9-pro"}
+    return {"status": "ok", "mode": "clean-v9.2"}
