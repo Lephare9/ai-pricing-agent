@@ -15,7 +15,7 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# ---------- GEMINI CALL (STABIL + RETRY) ----------
+# ---------- GEMINI CALL ----------
 def call_gemini(prompt, image_base64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -34,7 +34,7 @@ def call_gemini(prompt, image_base64):
         }]
     }
 
-    for i in range(2):  # 🔥 retry 1 gang
+    for _ in range(2):  # retry
         try:
             res = requests.post(url, json=payload, timeout=20)
             data = res.json()
@@ -47,13 +47,13 @@ def call_gemini(prompt, image_base64):
             return data["candidates"][0]["content"]["parts"][0]["text"]
 
         except Exception as e:
-            print("GEMINI ERROR:", e)
+            print("ERROR:", e)
             time.sleep(1)
 
     return None
 
 
-# ---------- ROBUST JSON PARSER ----------
+# ---------- JSON PARSER ----------
 def extract_json(text):
     try:
         text = text.replace("```json", "").replace("```", "").strip()
@@ -65,59 +65,62 @@ def extract_json(text):
         return {}
 
 
-# ---------- STEP 1: IDENTIFY (BRAND OPTIMERET) ----------
+# ---------- STEP 1: IDENTIFY ----------
 def identify_object(image_base64):
 
     prompt = """
-Analyser billedet og identificér produktet præcist.
+Identificér objekt præcist.
 
 Returnér KUN JSON:
 
 {
   "name": "",
   "brand": "",
-  "details": "",
-  "confidence": 0.0
+  "category": ""
 }
 
-KRAV:
-- find specifik model hvis muligt
-- find brand (Bolia, HAY, IKEA, Mater, Muuto, Fritz Hansen, Normann osv)
-- hvis usikker → skriv "ukendt"
-- max 5 linjer i details
-- vær konkret, ikke generisk
+Kategorier:
+- computer accessory
+- furniture
+- lamp
+- decor
+- other
+
+Regler:
+- vær konkret
+- find brand hvis muligt
 """
 
     return call_gemini(prompt, image_base64)
 
 
-# ---------- STEP 2: PRICE (BRAND AWARE) ----------
-def price_object(image_base64, name, brand):
+# ---------- PRICE ENGINE ----------
+def estimate_price(category, brand):
 
-    prompt = f"""
-Vurder brugtpris i Danmark.
+    base = {
+        "computer accessory": (50, 300),
+        "furniture": (300, 2000),
+        "lamp": (100, 1500),
+        "decor": (50, 800),
+        "other": (100, 1000)
+    }
 
-Produkt: {name}
-Brand: {brand}
+    price_min, price_max = base.get(category, (100, 1000))
 
-Returnér KUN JSON:
+    brand = brand.lower()
 
-{{
-  "price_min": 0,
-  "price_max": 0,
-  "confidence": 0.0
-}}
+    premium = ["bolia", "hay", "mater", "muuto", "fritz hansen"]
+    cheap = ["ikea"]
 
-REGLER:
-- design brands = højere pris (Bolia, HAY, Mater, Muuto, Fritz Hansen)
-- IKEA = lavere pris
-- realistisk DBA niveau
-- max 25% interval
-- hvis model kendes → vær præcis
-- hvis ukendt → lav konservativ vurdering
-"""
+    if brand in premium:
+        price_min *= 2
+        price_max *= 2.5
 
-    return call_gemini(prompt, image_base64)
+    elif brand in cheap:
+        price_min *= 0.6
+        price_max *= 0.7
+
+    return int(price_min), int(price_max)
 
 
 # ---------- API ----------
@@ -133,31 +136,23 @@ async def analyze(file: UploadFile = File(...)):
 
     name = identity.get("name") or "Ukendt produkt"
     brand = identity.get("brand") or "ukendt"
-    details = identity.get("details") or ""
+    category = identity.get("category") or "other"
 
-    # STEP 2
-    price_raw = price_object(base64_image, name, brand)
-    price = extract_json(price_raw) if price_raw else {}
+    # STEP 2 (AI price – hvis muligt)
+    price_min = 0
+    price_max = 0
 
-    price_min = int(price.get("price_min") or 0)
-    price_max = int(price.get("price_max") or 0)
-
-    # 🔥 fallback hvis AI fejler
-    if price_min == 0 and price_max == 0:
-        if brand.lower() in ["bolia", "hay", "mater", "muuto"]:
-            price_min, price_max = 1500, 3500
-        else:
-            price_min, price_max = 200, 800
-
-    confidence = int((price.get("confidence") or 0) * 100)
+    # fallback til kategori-baseret
+    if price_min == 0:
+        price_min, price_max = estimate_price(category, brand)
 
     return {
-        "description": f"{name}\n{brand}\n{details}",
+        "description": f"{name}\n{brand}",
         "price_range": f"{price_min} - {price_max} kr",
-        "confidence": confidence
+        "confidence": 70  # stabil default
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "brand-optimized"}
+    return {"status": "ok", "mode": "v2-stable"}
