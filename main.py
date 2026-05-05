@@ -4,6 +4,7 @@ import os, base64, requests, re
 
 app = FastAPI()
 
+# ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,10 +19,10 @@ SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 @app.get("/")
 def root():
-    return {"status": "ok - v16.1"}
+    return {"status": "ok - v16.2"}
 
 
-# ---------- GEMINI (BEDRE BESKRIVELSE) ----------
+# ---------- GEMINI (DETALJERET BESKRIVELSE) ----------
 def identify(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -32,15 +33,14 @@ def identify(img64):
                 {
                     "text": """Svar på dansk.
 
-Beskriv objektet kort men præcist.
-Medtag:
+Beskriv objektet kort og præcist med:
 - type
 - materiale
 - farve
 - form
 
 Eksempel:
-"keramisk bordlampe med hvid stofskærm og rund fod"
+"keramisk bordlampe med hvid stofskærm og rund base"
 
 Ingen forklaring."""
                 },
@@ -82,7 +82,7 @@ def build_queries(desc):
     ]
 
 
-# ---------- SEARCH ----------
+# ---------- SEARCH (FIXED) ----------
 def search_prices(queries):
 
     prices = []
@@ -94,6 +94,7 @@ def search_prices(queries):
         params = {
             "q": q,
             "api_key": SERP_API_KEY,
+            "engine": "google",
             "hl": "da",
             "gl": "dk"
         }
@@ -102,6 +103,17 @@ def search_prices(queries):
             r = requests.get("https://serpapi.com/search", params=params, timeout=10)
             data = r.json()
 
+            # 🔥 SHOPPING RESULTS (bedste)
+            for item in data.get("shopping_results", []):
+                price_str = item.get("price", "")
+
+                match = re.findall(r"(\d+)", price_str.replace(".", ""))
+                for m in match:
+                    val = int(m)
+                    if 20 < val < 100000:
+                        prices.append(val)
+
+            # 🔥 FALLBACK (organic)
             for res in data.get("organic_results", []):
                 text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
 
@@ -109,7 +121,6 @@ def search_prices(queries):
 
                 for f in found:
                     val = int(f)
-
                     if 20 < val < 100000:
                         prices.append(val)
 
@@ -130,7 +141,11 @@ def clean(prices):
     prices.sort()
     median = prices[len(prices)//2]
 
-    return [p for p in prices if median * 0.3 < p < median * 3]
+    cleaned = [p for p in prices if median * 0.3 < p < median * 3]
+
+    print("CLEAN:", cleaned)
+
+    return cleaned
 
 
 # ---------- CALC ----------
@@ -150,7 +165,11 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
 
     if not img:
-        return {"description": "-", "price": "-", "note": "fejl"}
+        return {
+            "description": "-",
+            "price": "-",
+            "note": "fejl"
+        }
 
     img64 = base64.b64encode(img).decode("utf-8")
 
@@ -171,7 +190,7 @@ async def analyze(file: UploadFile = File(...)):
         note = "baseret på lignende fund"
         price_text = f"{price} kr"
     else:
-        note = "ingen direkte fund – lignende"
+        note = "lignende - ingen direkte fund"
         price_text = "ukendt"
 
     return {
