@@ -38,14 +38,12 @@ def call_gemini(prompt, image=None):
             data = r.json()
 
             if "candidates" not in data:
-                print("GEMINI ERROR:", data)
                 time.sleep(1)
                 continue
 
             return data["candidates"][0]["content"]["parts"][0]["text"]
 
-        except Exception as e:
-            print("ERROR:", e)
+        except:
             time.sleep(1)
 
     return None
@@ -59,24 +57,22 @@ def extract_json(text):
         return {}
 
 
-# ---------- SPECIAL CASE ----------
+# ---------- PRICELESS ----------
 def check_priceless(image):
 
     prompt = """
-Ser billedet primært ud til at være:
-- et menneske / ansigt
+Er dette primært:
+- et menneske
+- et ansigt
 - eller et dyr
 
-OG der IKKE er tydeligt produkt eller brand?
+OG ikke et produkt?
 
 Svar KUN:
-YES
-eller
-NO
+YES eller NO
 """
 
     res = call_gemini(prompt, image)
-
     return "YES" in (res or "").upper()
 
 
@@ -84,12 +80,10 @@ NO
 def identify(image):
 
     prompt = """
-Identificér produkt meget præcist.
+Identificér produkt præcist.
 
-KRAV:
-- Brug korrekt brand hvis muligt
-- Brug modelnavn hvis muligt
-- realistisk titel som DBA annonce
+- brug brand hvis muligt
+- brug model hvis muligt
 
 Returnér JSON:
 {
@@ -136,29 +130,27 @@ def search(query):
 
         return results
 
-    except Exception as e:
-        print("SEARCH ERROR:", e)
+    except:
         return []
 
 
 # ---------- AI FILTER ----------
-def filter_prices(product_name, results):
+def filter_prices(name, results):
 
     if not results:
         return []
 
     prompt = f"""
-Produkt: {product_name}
+Produkt: {name}
 
-Her er søgeresultater med priser:
-
+Data:
 {results}
 
 OPGAVE:
-- Fjern KUN helt åbenlyst forkerte produkter
-- Behold hvis du er i tvivl
+- behold priser der KAN være samme type
+- fjern kun helt forkerte
 
-Returnér kun liste af tal:
+Returnér:
 [100,200,300]
 """
 
@@ -175,11 +167,11 @@ def round5(x):
     return int(round(x / 5) * 5)
 
 
-def calculate(filtered_prices, raw_results):
+def calculate(filtered, raw):
 
-    # LEVEL 1 (AI)
-    if len(filtered_prices) >= 3:
-        prices = sorted(filtered_prices)
+    # LEVEL 1 (AI filtreret)
+    if len(filtered) >= 3:
+        prices = sorted(filtered)
 
         cut = max(1, int(len(prices) * 0.2))
         prices = prices[cut:-cut] if len(prices) > 5 else prices
@@ -188,7 +180,7 @@ def calculate(filtered_prices, raw_results):
         return round5(avg * 0.9), round5(avg * 1.1)
 
     # LEVEL 2 (raw)
-    raw_prices = [r["price"] for r in raw_results]
+    raw_prices = [r["price"] for r in raw]
 
     if len(raw_prices) >= 3:
         prices = sorted(raw_prices)
@@ -216,28 +208,27 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
     img64 = base64.b64encode(img).decode()
 
-    # 🔥 PRICLESS CHECK
+    # priceless mode
     if check_priceless(img64):
         return {
             "description": "wow! priceless..",
             "price_range": "",
-            "condition": "middel stand"
+            "condition": "middel stand",
+            "note": ""
         }
 
-    # IDENTIFY
     data = identify(img64)
 
     name = data.get("name") or ""
     brand = data.get("brand") or ""
     condition = data.get("condition") or ""
 
-    print("IDENT:", name, brand)
-
     if not name:
         return {
             "description": "Ukendt produkt",
             "price_range": "Ingen pris",
-            "condition": ""
+            "condition": "",
+            "note": ""
         }
 
     queries = [
@@ -249,25 +240,45 @@ async def analyze(file: UploadFile = File(...)):
     all_results = []
 
     for q in queries:
-        print("SEARCH:", q)
         res = search(q)
-
         if res:
             all_results.extend(res)
 
-    print("RAW:", all_results)
-
     filtered = filter_prices(name, all_results)
 
-    print("FILTERED:", filtered)
-
     result = calculate(filtered, all_results)
+
+    similar_mode = False
+
+    # 🔥 hvis stadig ingen stærk data → brug lignende
+    if not result:
+
+        similar_queries = [
+            f"{name} lignende brugt danmark",
+            f"{name} furniture used price",
+            f"{name} similar used price"
+        ]
+
+        similar_results = []
+
+        for q in similar_queries:
+            res = search(q)
+            if res:
+                similar_results.extend(res)
+
+        filtered_sim = filter_prices(name, similar_results)
+
+        result = calculate(filtered_sim, similar_results)
+
+        if result:
+            similar_mode = True
 
     if not result:
         return {
             "description": f"{name}\n{brand}",
             "price_range": "Ingen pris fundet",
-            "condition": condition
+            "condition": condition,
+            "note": ""
         }
 
     min_p, max_p = result
@@ -275,10 +286,11 @@ async def analyze(file: UploadFile = File(...)):
     return {
         "description": f"{name}\n{brand}",
         "price_range": f"{min_p} - {max_p} kr",
-        "condition": condition
+        "condition": condition,
+        "note": "lignende" if similar_mode else ""
     }
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v10.1"}
+    return {"status": "ok", "mode": "v10.3-final"}
