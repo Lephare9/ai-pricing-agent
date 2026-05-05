@@ -59,6 +59,27 @@ def extract_json(text):
         return {}
 
 
+# ---------- SPECIAL CASE ----------
+def check_priceless(image):
+
+    prompt = """
+Ser billedet primært ud til at være:
+- et menneske / ansigt
+- eller et dyr
+
+OG der IKKE er tydeligt produkt eller brand?
+
+Svar KUN:
+YES
+eller
+NO
+"""
+
+    res = call_gemini(prompt, image)
+
+    return "YES" in (res or "").upper()
+
+
 # ---------- IDENTIFY ----------
 def identify(image):
 
@@ -66,9 +87,9 @@ def identify(image):
 Identificér produkt meget præcist.
 
 KRAV:
-- Brug korrekt brand (fx IKEA, Wegner, Hay)
+- Brug korrekt brand hvis muligt
 - Brug modelnavn hvis muligt
-- Brug realistisk titel som på DBA
+- realistisk titel som DBA annonce
 
 Returnér JSON:
 {
@@ -134,12 +155,11 @@ Her er søgeresultater med priser:
 {results}
 
 OPGAVE:
-- Behold KUN priser der matcher samme produkt
-- Fjern irrelevante (forkert type, størrelse, andet produkt)
-- Returnér kun liste af tal
+- Fjern KUN helt åbenlyst forkerte produkter
+- Behold hvis du er i tvivl
 
-Format:
-[100, 200, 300]
+Returnér kun liste af tal:
+[100,200,300]
 """
 
     raw = call_gemini(prompt)
@@ -155,20 +175,38 @@ def round5(x):
     return int(round(x / 5) * 5)
 
 
-def calculate(prices):
+def calculate(filtered_prices, raw_results):
 
-    if len(prices) < 3:
-        return None
+    # LEVEL 1 (AI)
+    if len(filtered_prices) >= 3:
+        prices = sorted(filtered_prices)
 
-    prices.sort()
+        cut = max(1, int(len(prices) * 0.2))
+        prices = prices[cut:-cut] if len(prices) > 5 else prices
 
-    # fjern outliers
-    cut = max(1, int(len(prices) * 0.2))
-    prices = prices[cut:-cut] if len(prices) > 5 else prices
+        avg = sum(prices) / len(prices)
+        return round5(avg * 0.9), round5(avg * 1.1)
 
-    avg = sum(prices) / len(prices)
+    # LEVEL 2 (raw)
+    raw_prices = [r["price"] for r in raw_results]
 
-    return round5(avg * 0.9), round5(avg * 1.1)
+    if len(raw_prices) >= 3:
+        prices = sorted(raw_prices)
+
+        cut = max(1, int(len(prices) * 0.3))
+        prices = prices[cut:-cut] if len(prices) > 5 else prices
+
+        avg = sum(prices) / len(prices)
+        return round5(avg * 0.85), round5(avg * 1.15)
+
+    # LEVEL 3 (median)
+    if raw_prices:
+        prices = sorted(raw_prices)
+        mid = prices[len(prices)//2]
+
+        return round5(mid * 0.9), round5(mid * 1.1)
+
+    return None
 
 
 # ---------- API ----------
@@ -178,6 +216,15 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
     img64 = base64.b64encode(img).decode()
 
+    # 🔥 PRICLESS CHECK
+    if check_priceless(img64):
+        return {
+            "description": "wow! priceless..",
+            "price_range": "",
+            "condition": "middel stand"
+        }
+
+    # IDENTIFY
     data = identify(img64)
 
     name = data.get("name") or ""
@@ -187,7 +234,11 @@ async def analyze(file: UploadFile = File(...)):
     print("IDENT:", name, brand)
 
     if not name:
-        return {"description": "Ukendt produkt", "price_range": "Ingen pris", "condition": ""}
+        return {
+            "description": "Ukendt produkt",
+            "price_range": "Ingen pris",
+            "condition": ""
+        }
 
     queries = [
         f"{brand} {name} brugt til salg danmark",
@@ -204,13 +255,13 @@ async def analyze(file: UploadFile = File(...)):
         if res:
             all_results.extend(res)
 
-    print("RAW RESULTS:", all_results)
+    print("RAW:", all_results)
 
-    prices = filter_prices(name, all_results)
+    filtered = filter_prices(name, all_results)
 
-    print("FILTERED:", prices)
+    print("FILTERED:", filtered)
 
-    result = calculate(prices)
+    result = calculate(filtered, all_results)
 
     if not result:
         return {
@@ -230,4 +281,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v10-pro"}
+    return {"status": "ok", "mode": "v10.1"}
