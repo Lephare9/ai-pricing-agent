@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont;
+  background: #f2f2f7;
+  margin: 0;
+  padding: 20px;
+}
+
+/* container */
+.container {
+  max-width: 480px;
+  margin: auto;
+}
+
+/* title */
+h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+
+/* actions */
+.actions {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.btn {
+  flex: 1;
+  height: 130px;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-weight: 600;
+  transition: 0.2s;
+}
+
+/* iOS camera button */
+.camera {
+  background: radial-gradient(circle at 30% 30%, #3a3a3a, #000);
+  color: white;
+  box-shadow: inset 0 0 30px rgba(255,255,255,0.1),
+              0 10px 30px rgba(0,0,0,0.3);
+}
+
+/* iOS archive button */
+.gallery {
+  background: linear-gradient(180deg, #ffe066, #ffd43b);
+  box-shadow: 0 10px 30px rgba(255,212,59,0.5);
+}
+
+/* press effect */
+.btn:active {
+  transform: scale(0.96);
+}
+
+/* cards */
+.card {
+  background: rgba(255,255,255,0.7);
+  backdrop-filter: blur(20px);
+  border-radius: 24px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+/* image */
+img {
+  width: 100%;
+  border-radius: 20px;
+}
+
+/* text */
+.name {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.meta {
+  color: #666;
+  margin-top: 4px;
+}
+
+/* price */
+.price {
+  font-size: 34px;
+  font-weight: 800;
+  color: #1e8e3e;
+}
+
+/* loading */
+.loading {
+  text-align: center;
+  padding: 20px;
+  color: #666;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>AI Pris Scanner</h1>
+
+<div class="actions">
+  <div class="btn camera" onclick="openCamera()">
+    📷
+    <div>Tag foto</div>
+  </div>
+
+  <div class="btn gallery" onclick="openFile()">
+    📁
+    <div>Arkiv</div>
+  </div>
+</div>
+
+<input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+<input type="file" id="fileInput" accept="image/*" hidden>
+
+<div id="result"></div>
+
+</div>
+
+<script>
+
+const API_URL = "https://ai-pricing-agent-production.up.railway.app/analyze";
+
+function openCamera() {
+  cameraInput.click();
+}
+
+function openFile() {
+  fileInput.click();
+}
+
+cameraInput.onchange = handleFile;
+fileInput.onchange = handleFile;
+
+async function handleFile(e) {
+
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const preview = URL.createObjectURL(file);
+  const result = document.getElementById("result");
+
+  result.innerHTML = `
+    <div class="card">
+      <img src="${preview}">
+      <div class="loading">Analyserer...</div>
+    </div>
+  `;
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await res.json();
+
+    const [name, brand] = data.description.split("\n");
+
+    result.innerHTML = `
+      <div class="card">
+        <img src="${preview}">
+      </div>
+
+      <div class="card">
+        <div class="name">${name}</div>
+        <div class="meta">${brand}</div>
+      </div>
+
+      <div class="card">
+        <div class="price">${data.price_range}</div>
+        <div class="meta">Sikkerhed: ${data.confidence}%</div>
+      </div>
+    `;
+
+  } catch {
+    result.innerHTML = `
+      <div class="card">
+        <img src="${preview}">
+        <div class="meta">⚠️ Fejl – prøv igen</div>
+      </div>
+    `;
+  }
+}
+
+</script>
+
+</body>
+</html>
