@@ -18,26 +18,23 @@ SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 @app.get("/")
 def root():
-    return {"status": "ok - v15.4"}
-
-
-# ---------- CLEAN TEXT ----------
-def clean_text(text):
-    text = text.split(".")[0]  # kun første sætning
-    text = re.sub(r"used for.*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"containing.*", "", text, flags=re.IGNORECASE)
-    return text.strip()
+    return {"status": "ok - v16"}
 
 
 # ---------- GEMINI ----------
-def call_gemini(img64):
+def identify(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     payload = {
         "contents": [{
             "parts": [
-                {"text": "Svar på dansk. Hvad er dette objekt? Kort navn."},
+                {
+                    "text": """Svar på dansk.
+Hvad er objektet? (kort navn, max 5 ord)
+Ingen forklaring.
+Eksempel: "teak spisebordsstol" """
+                },
                 {"inline_data": {"mime_type": "image/jpeg", "data": img64}}
             ]
         }]
@@ -46,71 +43,99 @@ def call_gemini(img64):
     try:
         r = requests.post(url, json=payload, timeout=15)
 
-        print("GEMINI:", r.status_code)
-
         if r.status_code != 200:
             return None
 
         data = r.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        txt = data["candidates"][0]["content"]["parts"][0]["text"]
 
-        return clean_text(text)
+        txt = txt.lower().strip()
+        txt = re.sub(r"[^\w\sæøå]", "", txt)
+
+        print("AI:", txt)
+
+        return txt
 
     except Exception as e:
-        print("GEMINI ERROR:", e)
+        print("AI ERROR:", e)
         return None
 
 
-# ---------- SEARCH ----------
-def search_prices(query):
+# ---------- MULTI SEARCH ----------
+def search_all(name):
 
-    if not SERP_API_KEY:
-        return []
+    queries = [
+        f"{name} dba",
+        f"{name} til salg",
+        f"{name} pris",
+        f"{name} brugt",
+        f"{name} danmark"
+    ]
 
-    url = "https://serpapi.com/search"
+    all_prices = []
 
-    params = {
-        "q": query,
-        "api_key": SERP_API_KEY,
-        "hl": "da",
-        "gl": "dk"
-    }
+    for q in queries:
 
-    prices = []
+        print("SEARCH:", q)
 
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
+        params = {
+            "q": q + " site:dba.dk",
+            "api_key": SERP_API_KEY,
+            "hl": "da",
+            "gl": "dk"
+        }
 
-        for res in data.get("organic_results", []):
-            text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
+        try:
+            r = requests.get("https://serpapi.com/search", params=params, timeout=10)
+            data = r.json()
 
-            found = re.findall(r"(\d{2,6})\s*kr", text)
+            for res in data.get("organic_results", []):
+                text = (res.get("title", "") + " " + res.get("snippet", "")).lower()
 
-            for f in found:
-                val = int(f)
-                if 10 < val < 100000:
-                    prices.append(val)
+                found = re.findall(r"(\d{2,6})\s*kr", text)
 
-    except Exception as e:
-        print("SEARCH ERROR:", e)
+                for f in found:
+                    val = int(f)
 
-    print("ALL PRICES:", prices)
+                    if 20 < val < 100000:
+                        all_prices.append(val)
 
-    return prices
+        except Exception as e:
+            print("SEARCH ERROR:", e)
+
+    print("ALL:", all_prices)
+
+    return all_prices
 
 
-# ---------- FINAL PRICE ----------
-def get_price(prices):
+# ---------- FILTER ----------
+def clean_prices(prices):
 
     if not prices:
-        return "ingen pris fundet"
+        return []
 
     prices.sort()
 
+    # fjern ekstreme outliers
     median = prices[len(prices)//2]
 
-    return f"{median} kr"
+    cleaned = [p for p in prices if median * 0.3 < p < median * 3]
+
+    print("CLEAN:", cleaned)
+
+    return cleaned
+
+
+# ---------- PRICE ----------
+def calculate(prices):
+
+    if not prices:
+        return None
+
+    prices.sort()
+    median = prices[len(prices)//2]
+
+    return median
 
 
 # ---------- API ----------
@@ -120,24 +145,31 @@ async def analyze(file: UploadFile = File(...)):
     img = await file.read()
 
     if not img:
-        return {"description": "ingen fil", "price": "ingen pris"}
+        return {"description": "ingen fil", "price": "-", "note": "fejl"}
 
     img64 = base64.b64encode(img).decode("utf-8")
 
-    name = call_gemini(img64)
+    name = identify(img64)
 
-    if not name:
-        name = "ukendt produkt"
+    if not name or len(name) < 3:
+        name = "ukendt objekt"
 
-    print("NAME:", name)
+    prices = search_all(name)
 
-    prices = search_prices(name)
-    prices += search_prices(name + " Danmark")
+    prices = clean_prices(prices)
 
-    price = get_price(prices)
+    price = calculate(prices)
+
+    if price:
+        note = "fundet via lignende"
+        price_text = f"{price} kr"
+    else:
+        note = "lignende - ingen direkte fund"
+        price_text = "ukendt"
 
     return {
         "description": name,
-        "price": price,
-        "raw_prices": prices[:10]
+        "price": price_text,
+        "note": note,
+        "data_points": len(prices)
     }
