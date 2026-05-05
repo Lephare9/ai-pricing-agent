@@ -32,60 +32,49 @@ def call_gemini(prompt, image=None):
 
     payload = {"contents": [{"parts": parts}]}
 
-    for _ in range(3):
-        try:
-            r = requests.post(url, json=payload, timeout=15)
-            data = r.json()
-
-            if "candidates" not in data:
-                print("GEMINI ERROR:", data)
-                time.sleep(1)
-                continue
-
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-
-        except Exception as e:
-            print("ERROR:", e)
-            time.sleep(1)
-
-    return None
+    try:
+        r = requests.post(url, json=payload, timeout=15)
+        data = r.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except:
+        return None
 
 
-# ---------- IDENTIFY (FIXED) ----------
+def extract_json(text):
+    try:
+        return json.loads(text[text.find("{"):text.rfind("}")+1])
+    except:
+        return {}
+
+
+# ---------- IDENTIFY + CATEGORY ----------
 def identify(image):
 
     prompt = """
-Identificér produkt fra billede.
+Identificér produkt + kategori.
 
-KRAV:
-- svar KUN i JSON
-- ingen ekstra tekst
-
-Format:
+Returnér JSON:
 {
  "name": "",
  "brand": "",
- "condition": ""
+ "condition": "",
+ "category": ""
 }
+
+Kategorier:
+furniture, decor, clothing_branded, clothing_generic,
+small_item, book, art, vehicle, electronics
 """
 
     raw = call_gemini(prompt, image)
-    print("RAW GEMINI:", raw)
-
-    if not raw:
-        return {}
 
     try:
-        return json.loads(raw)
+        return extract_json(raw)
     except:
-        try:
-            cleaned = raw[raw.find("{"):raw.rfind("}")+1]
-            return json.loads(cleaned)
-        except:
-            return {}
+        return {}
 
 
-# ---------- DBA SCRAPER (FIXED) ----------
+# ---------- DBA SEARCH ----------
 def search_dba(query):
 
     url = f"https://www.dba.dk/soeg/?soeg={query.replace(' ', '+')}"
@@ -98,23 +87,12 @@ def search_dba(query):
         text = soup.get_text(" ")
 
         matches = re.findall(r"(\d{2,5})[\s.,-]*kr", text.lower())
-
         prices = [int(m) for m in matches if 20 < int(m) < 50000]
-
-        print("DBA PRICES:", prices[:10])
 
         return prices[:15]
 
-    except Exception as e:
-        print("DBA ERROR:", e)
+    except:
         return []
-
-
-# ---------- FALLBACK SEARCH ----------
-def search_fallback(query):
-
-    # simpel fallback (bredere)
-    return search_dba(query + " brugt")
 
 
 # ---------- CALC ----------
@@ -122,7 +100,7 @@ def round5(x):
     return int(round(x / 5) * 5)
 
 
-def calculate(prices):
+def calc_range(prices):
 
     if not prices:
         return None
@@ -138,6 +116,120 @@ def calculate(prices):
     return round5(avg * 0.9), round5(avg * 1.1)
 
 
+# ---------- CATEGORY ROUTING ----------
+def handle_category(data):
+
+    name = data.get("name", "")
+    brand = data.get("brand", "")
+    category = data.get("category", "")
+    condition = data.get("condition", "")
+
+    query = f"{brand} {name}".strip()
+
+    # 🔴 BLOCKED
+    if category in ["vehicle", "electronics"]:
+        return {
+            "description": f"{name}\n{brand}",
+            "price_range": "Ikke understøttet",
+            "condition": condition,
+            "note": "special kategori"
+        }
+
+    # 👕 TØJ (generic)
+    if category == "clothing_generic":
+        return {
+            "description": f"{name}\n{brand}",
+            "price_range": "50 - 150 kr",
+            "condition": condition,
+            "note": "standard tøj"
+        }
+
+    # 👕 TØJ (brand)
+    if category == "clothing_branded":
+        prices = search_dba(query)
+        result = calc_range(prices)
+
+        if result:
+            return {
+                "description": f"{name}\n{brand}",
+                "price_range": f"{result[0]} - {result[1]} kr",
+                "condition": condition,
+                "note": ""
+            }
+
+        return {
+            "description": f"{name}\n{brand}",
+            "price_range": "100 - 300 kr",
+            "condition": condition,
+            "note": "lignende"
+        }
+
+    # 📚 BØGER
+    if category == "book":
+        return {
+            "description": f"{name}",
+            "price_range": "10 - 100 kr",
+            "condition": condition,
+            "note": ""
+        }
+
+    # 🧸 SMALL ITEM
+    if category == "small_item":
+        prices = search_dba(query)
+
+        prices = [p for p in prices if p < 500]
+
+        result = calc_range(prices)
+
+        if result:
+            return {
+                "description": f"{name}",
+                "price_range": f"{result[0]} - {result[1]} kr",
+                "condition": condition,
+                "note": ""
+            }
+
+        return {
+            "description": f"{name}",
+            "price_range": "20 - 300 kr",
+            "condition": condition,
+            "note": "lignende"
+        }
+
+    # 🪑 FURNITURE / DECOR / ART (CORE)
+    prices = search_dba(query)
+
+    result = calc_range(prices)
+
+    if result:
+        return {
+            "description": f"{name}\n{brand}",
+            "price_range": f"{result[0]} - {result[1]} kr",
+            "condition": condition,
+            "note": ""
+        }
+
+    # fallback lignende
+    prices = search_dba(name + " brugt")
+
+    result = calc_range(prices)
+
+    if result:
+        return {
+            "description": f"{name}\n{brand}",
+            "price_range": f"{result[0]} - {result[1]} kr",
+            "condition": condition,
+            "note": "lignende"
+        }
+
+    return {
+        "description": f"{name}\n{brand}",
+        "price_range": "100 - 500 kr",
+        "condition": condition,
+        "note": "lignende"
+    }
+
+
 # ---------- API ----------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
@@ -147,57 +239,17 @@ async def analyze(file: UploadFile = File(...)):
 
     data = identify(img64)
 
-    print("IDENT DATA:", data)
+    if not data:
+        return {
+            "description": "Ukendt produkt",
+            "price_range": "Ingen pris",
+            "condition": "",
+            "note": ""
+        }
 
-    name = data.get("name") or ""
-    brand = data.get("brand") or ""
-    condition = data.get("condition") or ""
-
-    # 🔴 fallback hvis identify fejler
-    if not name:
-        print("IDENT FAILED → fallback name")
-        name = "brugt produkt"
-
-    query = f"{brand} {name}".strip()
-
-    # 🔍 PRIMARY (DBA)
-    prices = search_dba(query)
-
-    similar_mode = False
-
-    # 🔁 fallback hvis få priser
-    if len(prices) < 3:
-        print("TRY FALLBACK SEARCH")
-        more = search_fallback(name)
-
-        if more:
-            prices.extend(more)
-            similar_mode = True
-
-    result = calculate(prices)
-
-    # 🔴 sidste fallback → median hvis noget findes
-    if not result and prices:
-        prices = sorted(prices)
-        mid = prices[len(prices)//2]
-        result = (round5(mid * 0.9), round5(mid * 1.1))
-        similar_mode = True
-
-    # 🔴 absolut fallback (alt fejler)
-    if not result:
-        result = (100, 300)
-        similar_mode = True
-
-    min_p, max_p = result
-
-    return {
-        "description": f"{name}\n{brand}",
-        "price_range": f"{min_p} - {max_p} kr",
-        "condition": condition,
-        "note": "lignende" if similar_mode else ""
-    }
+    return handle_category(data)
 
 
 @app.get("/")
 def root():
-    return {"status": "ok", "mode": "v11.1-stable"}
+    return {"status": "ok", "mode": "v12-category-engine"}
