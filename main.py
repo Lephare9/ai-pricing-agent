@@ -1,4 +1,4 @@
-print("🔥 AI PRICING AGENT v7 🔥")
+print("🔥 AI PRICING AGENT v8 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,8 +10,12 @@ from statistics import median
 from PIL import Image
 import base64
 
-# NEW SDK
-from google import genai
+# Gemini (optional fallback)
+try:
+    from google import genai
+    GEMINI_ENABLED = True
+except:
+    GEMINI_ENABLED = False
 
 app = FastAPI()
 
@@ -25,7 +29,8 @@ app.add_middleware(
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+if GEMINI_ENABLED and GEMINI_API_KEY:
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 # -------------------------
@@ -40,71 +45,16 @@ def compress_image(image_bytes, max_size=800):
         compressed = buf.getvalue()
         print(f"📦 COMPRESSED: {len(image_bytes)} → {len(compressed)}")
         return compressed
-    except Exception as e:
-        print("❌ Compress fejl:", e)
+    except:
         return image_bytes
 
 
 # -------------------------
-# 🔍 GEMINI (NY SDK)
-# -------------------------
-def detect_object(image_bytes):
-    try:
-        b64 = base64.b64encode(image_bytes).decode()
-
-        prompt = """
-Du ser et billede fra en genbrugsbutik i Danmark.
-
-Returnér KUN JSON:
-
-{
- "name": "kort dansk navn (max 3 ord)",
- "keywords": ["søgeord1", "søgeord2", "søgeord3"]
-}
-
-Svar KUN JSON. Ingen forklaring.
-"""
-
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": b64
-                    }
-                }
-            ]
-        )
-
-        text = response.text.strip()
-        print("🔥 GEMINI RAW:", text)
-
-        import json
-
-        try:
-            data = json.loads(text)
-        except:
-            text = text.replace("```json", "").replace("```", "")
-            data = json.loads(text)
-
-        name = data.get("name", "genstand")
-        keywords = data.get("keywords", [name])
-
-        return name, keywords
-
-    except Exception as e:
-        print("🚨 GEMINI FEJL:", e)
-        return "genstand", ["brugt genstand", "til salg"]
-
-
-# -------------------------
-# 🔍 GOOGLE LENS (SerpAPI)
+# 🔍 GOOGLE LENS (PRIMARY)
 # -------------------------
 def search_lens(image_bytes):
     try:
-        url = "https://serpapi.com/search"
+        url = "https://serpapi.com/search.json"
 
         files = {"image": ("image.jpg", image_bytes)}
 
@@ -116,6 +66,11 @@ def search_lens(image_bytes):
         }
 
         res = requests.post(url, files=files, params=params, timeout=15)
+
+        if res.status_code != 200:
+            print("❌ Lens HTTP:", res.status_code)
+            return []
+
         data = res.json()
 
         keywords = []
@@ -125,13 +80,46 @@ def search_lens(image_bytes):
             if title:
                 keywords.append(title.lower())
 
-        print("🔎 LENS KEYWORDS:", keywords)
+        print("🔎 LENS:", keywords)
 
         return keywords
 
     except Exception as e:
         print("Lens fejl:", e)
         return []
+
+
+# -------------------------
+# 🔍 GEMINI FALLBACK
+# -------------------------
+def detect_object_gemini(image_bytes):
+    if not GEMINI_ENABLED or not GEMINI_API_KEY:
+        return "genstand", ["brugt genstand"]
+
+    try:
+        b64 = base64.b64encode(image_bytes).decode()
+
+        response = client.models.generate_content(
+            model="gemini-1.5-pro",
+            contents=[
+                {"text": "Hvad er dette objekt? Svar kort på dansk."},
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": b64
+                    }
+                }
+            ]
+        )
+
+        text = response.text.strip()
+        print("🔥 GEMINI:", text)
+
+        return text, [text]
+
+    except Exception as e:
+        print("Gemini fejl:", e)
+        return "genstand", ["brugt genstand"]
 
 
 # -------------------------
@@ -147,9 +135,9 @@ def search_prices(query):
             "hl": "da"
         }
 
-        res = requests.get("https://serpapi.com/search", params=params, timeout=10)
-        data = res.json()
+        res = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
 
+        data = res.json()
         prices = []
 
         for r in data.get("organic_results", []):
@@ -181,18 +169,21 @@ async def analyze(file: UploadFile = File(...)):
 
     img = compress_image(contents)
 
-    # 1. Gemini
-    name, keywords = detect_object(img)
-
-    # 2. Lens backup
+    # 1. Lens FIRST
     lens_keywords = search_lens(img)
 
-    all_keywords = keywords + lens_keywords
-    print("🔎 FINAL SEARCH TERMS:", all_keywords)
+    if lens_keywords:
+        keywords = lens_keywords
+        name = lens_keywords[0]
+    else:
+        # 2. Gemini fallback
+        name, keywords = detect_object_gemini(img)
+
+    print("🔎 SEARCH TERMS:", keywords)
 
     prices = []
 
-    for kw in all_keywords[:3]:
+    for kw in keywords[:3]:
         print("🔍 SEARCH:", kw)
         prices.extend(search_prices(kw))
 
@@ -214,4 +205,4 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v7"}
+    return {"status": "ok", "version": "v8"}
