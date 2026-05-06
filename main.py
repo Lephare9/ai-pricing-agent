@@ -1,10 +1,13 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, re, statistics
+import requests
+import os
+import base64
+import re
 
 app = FastAPI()
 
-# ---------- CORS ----------
+# CORS (vigtigt for Netlify frontend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,126 +20,159 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
-@app.get("/")
-def root():
-    return {"status": "ok - v17.2 SERP + AI"}
+# -------------------------
+# AI BESKRIVELSE
+# -------------------------
+def describe_image(base64_image):
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-
-# ---------- AI BESKRIVELSE ----------
-def describe(img64):
-
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-    prompt = "Beskriv objektet kort på dansk med type, materiale og form."
-
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": "image/jpeg", "data": img64}}
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": "Beskriv objektet kort og præcist på dansk. Ingen forklaring, kun selve objektet og detaljer."},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": base64_image
+                            }
+                        }
+                    ]
+                }
             ]
-        }]
-    }
+        }
 
+        res = requests.post(url, json=payload, timeout=20)
+        data = res.json()
+
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        # ryd op
+        text = text.strip().replace("\n", " ")
+        text = text[0].upper() + text[1:]
+
+        return text
+
+    except Exception as e:
+        print("AI fejl:", e)
+        return "Ukendt objekt"
+
+
+# -------------------------
+# PRIS FRA SERP (SHOPPING)
+# -------------------------
+def get_price(query):
     try:
-        r = requests.post(url, json=payload, timeout=15)
-        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        return txt.lower()
+        url = "https://serpapi.com/search.json"
 
-    except:
-        return "ukendt objekt"
+        params = {
+            "engine": "google_shopping",
+            "q": query,
+            "hl": "da",
+            "gl": "dk",
+            "api_key": SERP_API_KEY
+        }
 
-
-# ---------- SERP SEARCH ----------
-def serp_prices(query):
-
-    url = "https://serpapi.com/search.json"
-
-    params = {
-        "q": f"{query} dba brugt pris",
-        "api_key": SERP_API_KEY,
-        "hl": "da",
-        "gl": "dk"
-    }
-
-    try:
-        r = requests.get(url, params=params, timeout=10)
-
-        print("SERP STATUS:", r.status_code)
-
-        data = r.json()
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
 
         prices = []
 
-        for res in data.get("organic_results", []):
+        for item in data.get("shopping_results", []):
+            price_str = item.get("price", "")
 
-            text = res.get("title", "") + " " + res.get("snippet", "")
+            if price_str:
+                match = re.findall(r"\d+", price_str.replace(".", ""))
+                if match:
+                    prices.append(int(match[0]))
 
-            found = re.findall(r"\b\d{2,5}\b", text)
-
-            for f in found:
-                val = int(f)
-
-                # filtrer støj
-                if 50 < val < 50000:
-                    prices.append(val)
-
-        print("SERP PRICES:", prices)
-
-        return prices
+        if prices:
+            prices.sort()
+            median = prices[len(prices)//2]
+            print("SHOPPING PRISER:", prices)
+            return median
 
     except Exception as e:
-        print("SERP ERROR:", e)
-        return []
+        print("SHOPPING fejl:", e)
 
-
-# ---------- AI FALLBACK ----------
-def ai_price(desc):
-
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-    prompt = f"Vurder brugtpris i Danmark for: {desc}. Kun tal."
-
+    # fallback til normal search (DBA osv.)
     try:
-        r = requests.post(url, json={
-            "contents": [{"parts": [{"text": prompt}]}]
-        })
+        url = "https://serpapi.com/search.json"
 
-        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        params = {
+            "q": f"{query} site:dba.dk",
+            "hl": "da",
+            "gl": "dk",
+            "api_key": SERP_API_KEY
+        }
 
-        match = re.search(r"\d+", txt)
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
 
-        if match:
-            return int(match.group())
+        prices = []
 
-    except:
-        pass
+        for item in data.get("organic_results", []):
+            text = item.get("title", "") + " " + item.get("snippet", "")
 
-    return 200
+            match = re.findall(r"\d{2,5}", text.replace(".", ""))
+            for m in match:
+                val = int(m)
+                if 50 < val < 20000:
+                    prices.append(val)
+
+        if prices:
+            prices.sort()
+            median = prices[len(prices)//2]
+            print("DBA PRISER:", prices)
+            return median
+
+    except Exception as e:
+        print("DBA fejl:", e)
+
+    return None
 
 
-# ---------- API ----------
+# -------------------------
+# ROOT TEST
+# -------------------------
+@app.get("/")
+def root():
+    return {"status": "ok - v18 shopping aktiv"}
+
+
+# -------------------------
+# ANALYZE ENDPOINT
+# -------------------------
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(request: Request):
+    try:
+        body = await request.json()
+        image_base64 = body.get("image", "").split(",")[-1]
 
-    img = await file.read()
-    img64 = base64.b64encode(img).decode("utf-8")
+        # AI beskrivelse
+        description = describe_image(image_base64)
 
-    # 1. Beskrivelse
-    desc = describe(img64)
+        # Pris
+        price = get_price(description)
 
-    # 2. SERP priser
-    prices = serp_prices(desc)
+        if not price:
+            return {
+                "description": description,
+                "price": "Ingen pris fundet",
+                "note": "Ingen markedsdata"
+            }
 
-    if prices:
-        price = int(statistics.median(prices))
-        source = "serp"
-    else:
-        price = ai_price(desc)
-        source = "ai"
+        return {
+            "description": description,
+            "price": f"{price} kr",
+            "note": "Estimeret markedspris"
+        }
 
-    return {
-        "description": desc,
-        "price": f"{price} kr",
-        "source": source
-    }
+    except Exception as e:
+        print("FEJL:", e)
+        return {
+            "description": "Fejl",
+            "price": "0 kr",
+            "note": "Systemfejl"
+        }
