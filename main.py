@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os, base64, requests, re
+import os, base64, requests, re, statistics
 
 app = FastAPI()
 
@@ -14,11 +14,12 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 @app.get("/")
 def root():
-    return {"status": "ok - v17.1 AI-first"}
+    return {"status": "ok - v17.2 SERP + AI"}
 
 
 # ---------- AI BESKRIVELSE ----------
@@ -26,19 +27,7 @@ def describe(img64):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    prompt = """Svar på dansk.
-
-Beskriv objektet kort og præcist med:
-- type
-- materiale
-- farve
-- form
-
-Eksempel:
-"keramisk bordlampe med beige stofskærm og rund fod"
-
-Ingen forklaring.
-"""
+    prompt = "Beskriv objektet kort på dansk med type, materiale og form."
 
     payload = {
         "contents": [{
@@ -51,112 +40,79 @@ Ingen forklaring.
 
     try:
         r = requests.post(url, json=payload, timeout=15)
+        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return txt.lower()
 
-        print("DESC STATUS:", r.status_code)
-
-        if r.status_code != 200:
-            return "ukendt objekt"
-
-        data = r.json()
-        txt = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        txt = txt.lower().strip()
-        txt = re.sub(r"[^\w\sæøå]", "", txt)
-
-        print("DESC:", txt)
-
-        return txt
-
-    except Exception as e:
-        print("DESC ERROR:", e)
+    except:
         return "ukendt objekt"
 
 
-# ---------- AI PRIS ----------
+# ---------- SERP SEARCH ----------
+def serp_prices(query):
+
+    url = "https://serpapi.com/search.json"
+
+    params = {
+        "q": f"{query} dba brugt pris",
+        "api_key": SERP_API_KEY,
+        "hl": "da",
+        "gl": "dk"
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+
+        print("SERP STATUS:", r.status_code)
+
+        data = r.json()
+
+        prices = []
+
+        for res in data.get("organic_results", []):
+
+            text = res.get("title", "") + " " + res.get("snippet", "")
+
+            found = re.findall(r"\b\d{2,5}\b", text)
+
+            for f in found:
+                val = int(f)
+
+                # filtrer støj
+                if 50 < val < 50000:
+                    prices.append(val)
+
+        print("SERP PRICES:", prices)
+
+        return prices
+
+    except Exception as e:
+        print("SERP ERROR:", e)
+        return []
+
+
+# ---------- AI FALLBACK ----------
 def ai_price(desc):
 
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    prompt = f"""
-Du er ekspert i brugtpriser i Danmark.
-
-Vurder realistisk pris på:
-{desc}
-
-Svar kun med ét tal i danske kroner.
-Ingen forklaring.
-"""
-
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
+    prompt = f"Vurder brugtpris i Danmark for: {desc}. Kun tal."
 
     try:
-        r = requests.post(url, json=payload, timeout=12)
+        r = requests.post(url, json={
+            "contents": [{"parts": [{"text": prompt}]}]
+        })
 
-        print("PRICE STATUS:", r.status_code)
+        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-        txt = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        match = re.findall(r"\d+", txt)
+        match = re.search(r"\d+", txt)
 
         if match:
-            val = int(match[0])
-            print("AI PRICE:", val)
-            return val
-
-        return None
-
-    except Exception as e:
-        print("PRICE ERROR:", e)
-        return None
-
-
-# ---------- STAND / NOTE ----------
-def generate_note(desc):
-
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-    prompt = f"""
-Giv en MEGET kort vurdering af stand for:
-{desc}
-
-Eksempler:
-"middel stand"
-"små brugsspor"
-"god stand"
-
-Kun 2-4 ord.
-"""
-
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-
-        if r.status_code != 200:
-            return "middel stand"
-
-        data = r.json()
-        txt = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        txt = txt.lower().strip()
-        txt = re.sub(r"[^\w\sæøå ]", "", txt)
-
-        return txt
+            return int(match.group())
 
     except:
-        return "middel stand"
+        pass
+
+    return 200
 
 
 # ---------- API ----------
@@ -164,30 +120,23 @@ Kun 2-4 ord.
 async def analyze(file: UploadFile = File(...)):
 
     img = await file.read()
-
-    if not img:
-        return {
-            "description": "-",
-            "price": "-",
-            "note": "fejl"
-        }
-
     img64 = base64.b64encode(img).decode("utf-8")
 
-    # 🔥 BESKRIVELSE
+    # 1. Beskrivelse
     desc = describe(img64)
 
-    # 🔥 PRIS (ALTID)
-    price = ai_price(desc)
+    # 2. SERP priser
+    prices = serp_prices(desc)
 
-    if not price:
-        price = 200  # sidste fallback (aldrig tom)
-
-    # 🔥 NOTE
-    note = generate_note(desc)
+    if prices:
+        price = int(statistics.median(prices))
+        source = "serp"
+    else:
+        price = ai_price(desc)
+        source = "ai"
 
     return {
         "description": desc,
         "price": f"{price} kr",
-        "note": note
+        "source": source
     }
