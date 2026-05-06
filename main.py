@@ -1,5 +1,4 @@
 import os
-import base64
 import requests
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,9 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
 
+from PIL import Image
+import io
+
 app = FastAPI()
 
-# CORS (frontend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("🔥 AI PRICING AGENT v14 🔥")
+print("🔥 AI PRICING AGENT v15 🔥")
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -27,37 +28,22 @@ print("🔑 SERPAPI:", "OK" if SERPAPI_KEY else "MISSING")
 print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
 
 
-# -------------------------
-# ROOT
-# -------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v14"}
+    return {"status": "ok", "version": "v15"}
 
 
-# -------------------------
-# GEMINI OBJECT DETECTION
-# -------------------------
+# ---------------- GEMINI ----------------
 def detect_object(image_bytes):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-
-        prompt = """
-Hvad er dette objekt? Svar kort på dansk.
-
-Format:
-navn, søgeord1, søgeord2
-
-Eksempel:
-trætønde, vintønde, træ tønde
-"""
 
         response = client.models.generate_content(
             model="gemini-1.5-pro",
             contents=[
                 types.Content(
                     parts=[
-                        types.Part(text=prompt),
+                        types.Part(text="Hvad er dette objekt? Svar kort på dansk, fx: stol, sofa, bord"),
                         types.Part(
                             inline_data=types.Blob(
                                 mime_type="image/jpeg",
@@ -72,67 +58,55 @@ trætønde, vintønde, træ tønde
         text = (response.text or "").lower().strip()
         print("🧠 GEMINI RAW:", text)
 
-        parts = [p.strip() for p in text.split(",") if p.strip()]
+        if not text:
+            return None, None
 
-        if parts:
-            return parts[0], parts[:3]
+        words = text.split(",")
+        words = [w.strip() for w in words if w.strip()]
 
-        return None, None
+        return words[0], words
 
     except Exception as e:
         print("🚨 GEMINI FEJL:", str(e))
         return None, None
 
 
-# -------------------------
-# SERPAPI PRICE SEARCH
-# -------------------------
+# ---------------- SERP ----------------
 def get_prices(query):
     try:
-        print(f"🔍 SEARCH: {query}")
+        print("🔍 SEARCH:", query)
 
         url = "https://serpapi.com/search.json"
         params = {
-            "q": f"{query} brugt til salg",
-            "location": "Denmark",
+            "q": f"{query} brugt",
             "hl": "da",
             "gl": "dk",
             "api_key": SERPAPI_KEY
         }
 
-        response = requests.get(url, params=params)
-        data = response.json()
+        data = requests.get(url, params=params).json()
 
         prices = []
 
-        # Google shopping results
         if "shopping_results" in data:
             for item in data["shopping_results"]:
-                price_str = item.get("price", "")
-                if price_str:
+                price = item.get("price")
+                if price:
                     try:
-                        price = int(
-                            price_str.replace("kr.", "")
-                            .replace("kr", "")
-                            .replace(".", "")
-                            .strip()
-                        )
-                        prices.append(price)
+                        p = int(price.replace("kr.", "").replace("kr", "").replace(".", "").strip())
+                        prices.append(p)
                     except:
                         pass
 
-        print(f"💰 FOUND {len(prices)} prices")
-
+        print("💰 FOUND", len(prices))
         return prices
 
     except Exception as e:
-        print("🚨 SERPAPI FEJL:", str(e))
+        print("🚨 SERP FEJL:", e)
         return []
 
 
-# -------------------------
-# ANALYZE ENDPOINT
-# -------------------------
+# ---------------- ANALYZE ----------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     print("=== /analyze ===")
@@ -140,57 +114,30 @@ async def analyze(file: UploadFile = File(...)):
     contents = await file.read()
     print("📷 SIZE:", len(contents))
 
-    # -------- COMPRESS IMAGE --------
-    import io
-    from PIL import Image
-
+    # compress
     image = Image.open(io.BytesIO(contents))
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=60)
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=60)
+    img = buf.getvalue()
 
-    compressed = buffer.getvalue()
-    print("📦 COMPRESSED:", len(contents), "→", len(compressed))
+    print("📦 COMPRESSED:", len(img))
 
-    # -------- DETECT OBJECT --------
-    name, keywords = detect_object(compressed)
+    name, keywords = detect_object(img)
 
     if not name:
-        return {
-            "name": "Kunne ikke analysere billede",
-            "price": 0,
-            "prices_found": 0
-        }
+        return {"name": "Gemini fejlede", "price": 0, "prices_found": 0}
 
-    print("🧠 OBJECT:", name, keywords)
-
-    # -------- SEARCH PRICES --------
     all_prices = []
 
     for kw in keywords:
-        prices = get_prices(kw)
-        all_prices.extend(prices)
+        all_prices += get_prices(kw)
 
-    # fallback search
     if not all_prices:
-        print("⚠️ fallback søgning")
-        prices = get_prices(name)
-        all_prices.extend(prices)
+        all_prices += get_prices(name)
 
-    # -------- RESULT --------
     if all_prices:
-        avg_price = int(sum(all_prices) / len(all_prices))
-        print(f"💰 RESULT: {name} → {avg_price} kr")
+        avg = int(sum(all_prices) / len(all_prices))
+        print("💰 RESULT:", name, avg)
+        return {"name": name, "price": avg, "prices_found": len(all_prices)}
 
-        return {
-            "name": name,
-            "price": avg_price,
-            "prices_found": len(all_prices)
-        }
-
-    print("❌ INGEN PRISER FUNDET")
-
-    return {
-        "name": name,
-        "price": 0,
-        "prices_found": 0
-    }
+    return {"name": name, "price": 0, "prices_found": 0}
