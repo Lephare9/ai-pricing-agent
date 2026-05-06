@@ -1,13 +1,12 @@
 import os
+import io
 import requests
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from google import genai
 from google.genai import types
-
 from PIL import Image
-import io
 
 app = FastAPI()
 
@@ -19,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("🔥 AI PRICING AGENT v15 🔥")
+print("🔥 AI PRICING AGENT v16 🔥")
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -30,7 +29,7 @@ print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
 
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v15"}
+    return {"status": "ok", "version": "v16"}
 
 
 # ---------------- GEMINI ----------------
@@ -38,12 +37,14 @@ def detect_object(image_bytes):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 
+        prompt = "Hvad er dette objekt? Svar kort på dansk, fx: stol, sofa, bord"
+
         response = client.models.generate_content(
-            model="gemini-1.5-flash"
+            model="gemini-1.5-flash",
             contents=[
                 types.Content(
                     parts=[
-                        types.Part(text="Hvad er dette objekt? Svar kort på dansk, fx: stol, sofa, bord"),
+                        types.Part(text=prompt),
                         types.Part(
                             inline_data=types.Blob(
                                 mime_type="image/jpeg",
@@ -61,8 +62,7 @@ def detect_object(image_bytes):
         if not text:
             return None, None
 
-        words = text.split(",")
-        words = [w.strip() for w in words if w.strip()]
+        words = [w.strip() for w in text.split(",") if w.strip()]
 
         return words[0], words
 
@@ -93,16 +93,21 @@ def get_prices(query):
                 price = item.get("price")
                 if price:
                     try:
-                        p = int(price.replace("kr.", "").replace("kr", "").replace(".", "").strip())
+                        p = int(
+                            price.replace("kr.", "")
+                            .replace("kr", "")
+                            .replace(".", "")
+                            .strip()
+                        )
                         prices.append(p)
                     except:
                         pass
 
-        print("💰 FOUND", len(prices))
+        print("💰 FOUND:", len(prices))
         return prices
 
     except Exception as e:
-        print("🚨 SERP FEJL:", e)
+        print("🚨 SERP FEJL:", str(e))
         return []
 
 
@@ -111,33 +116,71 @@ def get_prices(query):
 async def analyze(file: UploadFile = File(...)):
     print("=== /analyze ===")
 
-    contents = await file.read()
-    print("📷 SIZE:", len(contents))
+    try:
+        contents = await file.read()
+        print("📷 SIZE:", len(contents))
 
-    # compress
-    image = Image.open(io.BytesIO(contents))
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=60)
-    img = buf.getvalue()
+        # --- image load ---
+        try:
+            image = Image.open(io.BytesIO(contents))
+        except Exception as e:
+            return {
+                "name": "Billede fejl",
+                "price": 0,
+                "prices_found": 0,
+                "error": str(e)
+            }
 
-    print("📦 COMPRESSED:", len(img))
+        # --- compress ---
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=60)
+        img = buffer.getvalue()
 
-    name, keywords = detect_object(img)
+        print("📦 COMPRESSED:", len(img))
 
-    if not name:
-        return {"name": "Gemini fejlede", "price": 0, "prices_found": 0}
+        # --- detect ---
+        name, keywords = detect_object(img)
 
-    all_prices = []
+        if not name:
+            return {
+                "name": "Gemini fejlede",
+                "price": 0,
+                "prices_found": 0
+            }
 
-    for kw in keywords:
-        all_prices += get_prices(kw)
+        print("🧠 OBJECT:", name, keywords)
 
-    if not all_prices:
-        all_prices += get_prices(name)
+        # --- search ---
+        all_prices = []
 
-    if all_prices:
-        avg = int(sum(all_prices) / len(all_prices))
-        print("💰 RESULT:", name, avg)
-        return {"name": name, "price": avg, "prices_found": len(all_prices)}
+        for kw in keywords:
+            all_prices += get_prices(kw)
 
-    return {"name": name, "price": 0, "prices_found": 0}
+        if not all_prices:
+            print("⚠️ fallback søgning")
+            all_prices += get_prices(name)
+
+        if all_prices:
+            avg = int(sum(all_prices) / len(all_prices))
+            print("💰 RESULT:", name, avg)
+
+            return {
+                "name": name,
+                "price": avg,
+                "prices_found": len(all_prices)
+            }
+
+        return {
+            "name": name,
+            "price": 0,
+            "prices_found": 0
+        }
+
+    except Exception as e:
+        print("🔥 CRASH:", str(e))
+        return {
+            "name": "Server fejl",
+            "price": 0,
+            "prices_found": 0,
+            "error": str(e)
+        }
