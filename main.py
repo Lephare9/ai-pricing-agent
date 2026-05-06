@@ -1,4 +1,4 @@
-print("🔥 AI PRICING AGENT v9 🔥")
+print("🔥 AI PRICING AGENT v10 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +20,7 @@ app.add_middleware(
 )
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # -------------------------
@@ -44,48 +45,46 @@ def compress_image(image_bytes, max_size=800):
 
 
 # -------------------------
-# 🔎 GOOGLE LENS (FIXET)
+# 🧠 GEMINI (OBJEKT GENKEND)
 # -------------------------
-def search_lens(image_bytes):
+def detect_object(image_bytes):
     try:
-        url = "https://serpapi.com/search.json"
+        import google.generativeai as genai
 
-        b64 = base64.b64encode(image_bytes).decode()
+        genai.configure(api_key=GEMINI_API_KEY)
 
-        params = {
-            "engine": "google_lens",
-            "api_key": SERPAPI_KEY,
-            "hl": "da",
-            "gl": "dk",
-            "image_content": b64   # ✅ FIX
-        }
+        model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
 
-        res = requests.get(url, params=params, timeout=20)
-        data = res.json()
+        prompt = """
+Hvad er dette objekt?
 
-        keywords = []
+Svar KUN med:
+- kort dansk navn (2-3 ord)
+- 2 alternative søgeord
 
-        for r in data.get("visual_matches", [])[:5]:
-            title = r.get("title", "")
-            if title:
-                keywords.append(title.lower())
+Format:
+sofa, træ sofa, retro sofa
+"""
 
-        # 🔥 rens keywords
-        cleaned = []
-        for k in keywords:
-            k = re.sub(r"[^a-zA-Z0-9æøåÆØÅ ]", "", k)
-            k = k.replace("vintage", "").replace("wood", "")
-            k = k.strip()
-            if len(k) > 3:
-                cleaned.append(k)
+        response = model.generate_content([
+            {"mime_type": "image/jpeg", "data": image_bytes},
+            prompt
+        ])
 
-        print("🔎 LENS:", cleaned)
+        text = response.text.lower().strip()
 
-        return cleaned
+        print("🧠 GEMINI:", text)
+
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+
+        if len(parts) >= 1:
+            return parts[0], parts[:3]
+
+        return "genstand", ["møbel"]
 
     except Exception as e:
-        print("Lens fejl:", e)
-        return []
+        print("🚨 GEMINI FEJL:", e)
+        return "genstand", ["møbel"]
 
 
 # -------------------------
@@ -128,7 +127,7 @@ def search_prices(query):
         return prices
 
     except Exception as e:
-        print("Pris søg fejl:", e)
+        print("Pris fejl:", e)
         return []
 
 
@@ -144,29 +143,25 @@ async def analyze(file: UploadFile = File(...)):
 
     compressed = compress_image(contents)
 
-    # 🔎 Lens
-    keywords = search_lens(compressed)
+    # 🧠 Gemini
+    name, keywords = detect_object(compressed)
 
-    # fallback hvis Lens fejler
-    if not keywords:
-        keywords = ["møbel", "til salg"]
+    print("🧠 OBJECT:", name, keywords)
 
-    print("🔎 FINAL SEARCH TERMS:", keywords)
-
-    # 💰 hent priser
+    # 💰 søg priser
     all_prices = []
 
-    for kw in keywords[:3]:
+    for kw in keywords:
         prices = search_prices(kw)
         all_prices.extend(prices)
 
-    # fallback igen hvis ingen data
+    # fallback hvis ingen hits
     if not all_prices:
         print("⚠️ fallback søgning")
-        all_prices.extend(search_prices("møbel dba"))
+        all_prices.extend(search_prices(name))
 
     # -------------------------
-    # 📊 BEREGN PRIS
+    # 📊 BEREGN
     # -------------------------
     if all_prices:
         all_prices.sort()
@@ -178,13 +173,13 @@ async def analyze(file: UploadFile = File(...)):
         min_price = min(trimmed)
         max_price = max(trimmed)
 
-        label = keywords[0]
+        label = name
 
     else:
         final_price = 100
         min_price = 50
         max_price = 200
-        label = "genstand"
+        label = name
 
     print(f"💰 RESULT: {label} → {final_price} kr")
 
@@ -201,4 +196,4 @@ async def analyze(file: UploadFile = File(...)):
 # -------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v9"}
+    return {"status": "ok", "version": "v10"}
