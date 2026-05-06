@@ -23,82 +23,143 @@ SERP_API_KEY = os.getenv("SERP_API_KEY")
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     try:
-        print("=== /analyze called ===")
-
         contents = await file.read()
         image_base64 = base64.b64encode(contents).decode()
 
         # ------------------------
-        # 1. GEMINI ANALYSE
+        # 1. GEMINI (object + text)
         # ------------------------
         try:
             model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
             response = model.generate_content([
                 {"mime_type": "image/jpeg", "data": contents},
-                "Hvad er dette objekt? Beskriv kort og nævn tekst på objektet hvis muligt."
+                """Hvad er objektet? (kort svar)
+                Er der tekst på objektet? skriv den også.
+                Format:
+                OBJECT: ...
+                TEXT: ...
+                """
             ])
 
-            description = response.text.lower()
-            print("Gemini:", description)
+            result = response.text.lower()
+
+            object_desc = "ukendt objekt"
+            text_found = ""
+
+            if "object:" in result:
+                object_desc = result.split("object:")[1].split("\n")[0].strip()
+
+            if "text:" in result:
+                text_found = result.split("text:")[1].strip()
 
         except Exception as e:
             print("Gemini fejl:", e)
-            description = "ukendt objekt"
+            object_desc = "ukendt objekt"
+            text_found = ""
+
+        print("OBJECT:", object_desc)
+        print("TEXT:", text_found)
 
         # ------------------------
-        # 2. GOOGLE LENS (SerpAPI)
+        # 2. SEARCH (DBA / SALG)
         # ------------------------
+        queries = [
+            f"{object_desc} dba",
+            f"{object_desc} til salg",
+            f"{object_desc} marketplace",
+            f"{object_desc} vintage"
+        ]
+
+        if text_found:
+            queries.insert(0, f"{text_found} dba")
+
         prices = []
 
-        try:
-            params = {
-                "engine": "google_lens",
-                "api_key": SERP_API_KEY,
-                "image_base64": image_base64
-            }
-
-            r = requests.get("https://serpapi.com/search", params=params)
-
+        for query in queries:
             try:
-                data = r.json()
+                print("Searching:", query)
+
+                params = {
+                    "engine": "google",
+                    "q": query,
+                    "api_key": SERP_API_KEY
+                }
+
+                r = requests.get("https://serpapi.com/search", params=params)
+
+                try:
+                    data = r.json()
+                except:
+                    print("Ikke JSON:", r.text)
+                    continue
+
+                for res in data.get("organic_results", [])[:5]:
+                    snippet = res.get("snippet", "").lower()
+
+                    # skip nypris
+                    if "ny" in snippet:
+                        continue
+
+                    digits = ''.join(c for c in snippet if c.isdigit())
+
+                    if digits:
+                        price = int(digits)
+
+                        # filter støj
+                        if 20 < price < 5000:
+                            prices.append(price)
+
             except Exception:
-                print("SerpAPI ikke JSON:", r.text)
-                data = {}
-
-            visual_matches = data.get("visual_matches", [])
-
-            for item in visual_matches[:5]:
-                title = item.get("title", "")
-                price_str = item.get("price", "")
-
-                if price_str:
-                    price_num = ''.join(c for c in price_str if c.isdigit())
-                    if price_num:
-                        prices.append(int(price_num))
-
-        except Exception:
-            print("SerpAPI crash:")
-            print(traceback.format_exc())
+                print("Query fejlede:", query)
 
         # ------------------------
-        # 3. FALLBACK LOGIK
+        # 3. FALLBACK: LENS
+        # ------------------------
+        if not prices:
+            try:
+                print("Fallback: Google Lens")
+
+                params = {
+                    "engine": "google_lens",
+                    "api_key": SERP_API_KEY,
+                    "image_base64": image_base64
+                }
+
+                r = requests.get("https://serpapi.com/search", params=params)
+                data = r.json()
+
+                for item in data.get("visual_matches", [])[:5]:
+                    price_str = item.get("price", "")
+                    digits = ''.join(c for c in price_str if c.isdigit())
+
+                    if digits:
+                        price = int(digits)
+                        if 20 < price < 5000:
+                            prices.append(price)
+
+            except:
+                print("Lens fejlede")
+
+        # ------------------------
+        # 4. FINAL PRICE (median)
         # ------------------------
         if prices:
-            avg_price = int(sum(prices) / len(prices))
+            prices = sorted(prices)
+            mid = len(prices) // 2
+            final_price = prices[mid]
         else:
-            print("Ingen priser → fallback")
-
-            if "kasse" in description or "crate" in description:
-                avg_price = 80
-            elif "stol" in description:
-                avg_price = 250
+            # sidste fallback
+            if "kasse" in object_desc:
+                final_price = 80
+            elif "stol" in object_desc:
+                final_price = 250
             else:
-                avg_price = 100
+                final_price = 100
 
         return {
-            "description": description,
-            "price": f"{avg_price} kr"
+            "description": object_desc,
+            "price": f"{final_price} kr"
         }
 
     except Exception:
