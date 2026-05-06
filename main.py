@@ -1,117 +1,89 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import base64
 import os
 
 app = FastAPI()
 
-# CORS (MEGET vigtig for Netlify → Railway)
+# 🔥 CORS (KRITISK for Netlify → Railway)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # senere kan du begrænse til din Netlify URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERP_API_KEY = os.getenv("SERP_API_KEY")
+print("🚀 Backend starting...")
 
-
+# ✅ Health check
 @app.get("/")
 def root():
-    return {"status": "ok - v17.2 debug"}
+    return {"status": "ok"}
 
 
+# ✅ Analyze endpoint
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
+    print("=== /analyze called ===")
+
     try:
-        print("=== HIT ANALYZE ===")
+        contents = await file.read()
+        print(f"File size: {len(contents)} bytes")
 
-        image_bytes = await file.read()
-        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        # 🔹 Simpel beskrivelse (midlertidig)
+        description = "Brugt møbel (automatisk analyse)"
 
-        # ---------------- GEMINI ----------------
-        prompt = """
-Beskriv objektet meget præcist på dansk:
-materiale, farve, type, stand.
+        # 🔹 SerpApi (hvis key findes)
+        serp_key = os.getenv("SERPAPI_KEY")
 
-Svar KUN:
-kort præcis beskrivelse uden ekstra tekst
-"""
+        if serp_key:
+            print("🔍 Using SerpApi...")
 
-        gemini_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            params = {
+                "engine": "google",
+                "q": "brugt møbel pris",
+                "api_key": serp_key
+            }
 
-        gemini_payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
-                ]
-            }]
-        }
+            res = requests.get("https://serpapi.com/search.json", params=params)
+            data = res.json()
 
-        gemini_res = requests.post(gemini_url, json=gemini_payload)
-        print("Gemini status:", gemini_res.status_code)
+            prices = []
 
-        gemini_json = gemini_res.json()
-        print("Gemini response:", gemini_json)
+            try:
+                results = data.get("organic_results", [])
 
-        description = gemini_json["candidates"][0]["content"]["parts"][0]["text"]
-        description = description.strip().capitalize()
+                for r in results:
+                    rich = r.get("rich_snippet", {})
+                    detected = rich.get("detected_extensions", {})
+                    price = detected.get("price")
 
-        print("Description:", description)
+                    if price:
+                        prices.append(float(price))
 
-        # ---------------- SERP ----------------
-        search_query = description
+                print("Prices found:", prices)
 
-        serp_url = "https://serpapi.com/search.json"
-        serp_params = {
-            "q": search_query,
-            "api_key": SERP_API_KEY,
-            "engine": "google",
-            "hl": "da",
-            "gl": "dk"
-        }
+                if prices:
+                    avg_price = int(sum(prices) / len(prices))
+                else:
+                    avg_price = 200  # fallback
 
-        serp_res = requests.get(serp_url, params=serp_params)
-        print("SERP status:", serp_res.status_code)
+            except Exception as e:
+                print("Serp parsing error:", str(e))
+                avg_price = 200
 
-        serp_json = serp_res.json()
-        print("SERP response:", serp_json)
-
-        prices = []
-
-        # Extract priser fra snippets
-        if "organic_results" in serp_json:
-            for r in serp_json["organic_results"]:
-                snippet = r.get("snippet", "")
-                words = snippet.split()
-                for w in words:
-                    if "kr" in w.lower():
-                        try:
-                            num = int("".join(filter(str.isdigit, w)))
-                            if 10 < num < 50000:
-                                prices.append(num)
-                        except:
-                            pass
-
-        print("Prices found:", prices)
-
-        if prices:
-            avg_price = int(sum(prices) / len(prices))
-            price = f"{avg_price} kr"
         else:
-            price = "Ingen pris fundet"
+            print("⚠️ No SERPAPI_KEY → fallback mode")
+            avg_price = 150
 
         return {
             "description": description,
-            "price": price
+            "price": f"{avg_price} kr"
         }
 
     except Exception as e:
-        print("🔥 ERROR:", str(e))
+        print("❌ ERROR:", str(e))
         return {
             "description": "Systemfejl",
             "price": "0 kr"
