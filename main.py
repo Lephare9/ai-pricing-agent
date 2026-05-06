@@ -1,11 +1,12 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+import base64
 import os
-import re
 
 app = FastAPI()
 
+# CORS (MEGET vigtig for Netlify → Railway)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,131 +19,100 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
-# -------------------------
-# AI BESKRIVELSE
-# -------------------------
-def describe_image(base64_image):
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+@app.get("/")
+def root():
+    return {"status": "ok - v17.2 debug"}
 
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": "Beskriv objektet kort på dansk, fx: 'Barstol i træ med lædersæde'"},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": base64_image
-                            }
-                        }
-                    ]
-                }
-            ]
+
+@app.post("/analyze")
+async def analyze(file: UploadFile = File(...)):
+    try:
+        print("=== HIT ANALYZE ===")
+
+        image_bytes = await file.read()
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        # ---------------- GEMINI ----------------
+        prompt = """
+Beskriv objektet meget præcist på dansk:
+materiale, farve, type, stand.
+
+Svar KUN:
+kort præcis beskrivelse uden ekstra tekst
+"""
+
+        gemini_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+        gemini_payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
+                ]
+            }]
         }
 
-        res = requests.post(url, json=payload, timeout=20)
-        data = res.json()
+        gemini_res = requests.post(gemini_url, json=gemini_payload)
+        print("Gemini status:", gemini_res.status_code)
 
-        print("RAW GEMINI:", data)
+        gemini_json = gemini_res.json()
+        print("Gemini response:", gemini_json)
 
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        text = text.strip().replace("\n", " ")
-        return text[0].upper() + text[1:]
+        description = gemini_json["candidates"][0]["content"]["parts"][0]["text"]
+        description = description.strip().capitalize()
 
-    except Exception as e:
-        print("AI fejl:", e)
-        return "Ukendt objekt"
+        print("Description:", description)
 
+        # ---------------- SERP ----------------
+        search_query = description
 
-# -------------------------
-# SERP PRIS
-# -------------------------
-def get_price(query):
-    try:
-        url = "https://serpapi.com/search.json"
-
-        params = {
-            "engine": "google_shopping",
-            "q": query,
+        serp_url = "https://serpapi.com/search.json"
+        serp_params = {
+            "q": search_query,
+            "api_key": SERP_API_KEY,
+            "engine": "google",
             "hl": "da",
-            "gl": "dk",
-            "api_key": SERP_API_KEY
+            "gl": "dk"
         }
 
-        res = requests.get(url, params=params, timeout=10)
-        data = res.json()
+        serp_res = requests.get(serp_url, params=serp_params)
+        print("SERP status:", serp_res.status_code)
 
-        print("SERP RAW:", data)
+        serp_json = serp_res.json()
+        print("SERP response:", serp_json)
 
         prices = []
 
-        for item in data.get("shopping_results", []):
-            price_str = item.get("price", "")
-            match = re.findall(r"\d+", price_str.replace(".", ""))
-            if match:
-                prices.append(int(match[0]))
+        # Extract priser fra snippets
+        if "organic_results" in serp_json:
+            for r in serp_json["organic_results"]:
+                snippet = r.get("snippet", "")
+                words = snippet.split()
+                for w in words:
+                    if "kr" in w.lower():
+                        try:
+                            num = int("".join(filter(str.isdigit, w)))
+                            if 10 < num < 50000:
+                                prices.append(num)
+                        except:
+                            pass
+
+        print("Prices found:", prices)
 
         if prices:
-            prices.sort()
-            return prices[len(prices)//2]
-
-    except Exception as e:
-        print("SERP fejl:", e)
-
-    return None
-
-
-# -------------------------
-# ROOT
-# -------------------------
-@app.get("/")
-def root():
-    return {"status": "ok - v18.1 stable"}
-
-
-# -------------------------
-# ANALYZE
-# -------------------------
-@app.post("/analyze")
-async def analyze(request: Request):
-    try:
-        body = await request.json()
-        print("REQUEST BODY:", body)
-
-        image_data = body.get("image")
-
-        if not image_data:
-            return {"description": "Ingen billede", "price": "0 kr"}
-
-        # håndter både raw og data URL
-        if "," in image_data:
-            image_base64 = image_data.split(",")[1]
+            avg_price = int(sum(prices) / len(prices))
+            price = f"{avg_price} kr"
         else:
-            image_base64 = image_data
-
-        description = describe_image(image_base64)
-        price = get_price(description)
-
-        if not price:
-            return {
-                "description": description,
-                "price": "Ingen pris fundet"
-            }
+            price = "Ingen pris fundet"
 
         return {
             "description": description,
-            "price": f"{price} kr"
+            "price": price
         }
 
     except Exception as e:
-        print("TOTAL FEJL:", e)
+        print("🔥 ERROR:", str(e))
         return {
             "description": "Systemfejl",
             "price": "0 kr"
-        }
-        return {
-            "description": "Fejl",
-            "price": "0 kr",
-            "note": "Systemfejl"
         }
