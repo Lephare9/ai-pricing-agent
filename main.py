@@ -6,7 +6,7 @@ import base64
 
 app = FastAPI()
 
-# 🔓 CORS (vigtigt for Netlify)
+# 🔓 CORS (Netlify fix)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,7 +21,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 print("🚀 Backend starting...")
 
 
-# 🧠 Gemini analyse (FORBEDRET)
+# 🧠 Gemini analyse (FIXED)
 def analyze_with_gemini(image_bytes):
     try:
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -29,15 +29,16 @@ def analyze_with_gemini(image_bytes):
         url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
         prompt = """
-Beskriv dette møbel så præcist som muligt.
+Beskriv objektet på billedet så præcist som muligt.
 
 Svar KUN med:
-- type (stol, sofa, bord osv.)
-- materiale (træ, rattan, læder osv.)
-- stil (retro, moderne, dansk design hvis relevant)
+- type (stol, bord, kasse, lampe osv.)
+- materiale (træ, metal, rattan osv.)
+- evt stil (retro, vintage, dansk design)
 
 Eksempel:
-"rattan lænestol retro"
+"trækasse vintage"
+"rattan stol retro"
 """
 
         payload = {
@@ -62,20 +63,23 @@ Eksempel:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         result = text.strip().lower()
 
-        print("🧠 Gemini result:", result)
+        print("🧠 Gemini raw:", result)
 
-        # fallback hvis for generisk
-        if len(result) < 5 or "møbel" in result:
-            return "stol rattan"
+        # 🔥 smarter fallback (overskriver IKKE gode svar)
+        bad_words = ["møbel", "ting", "objekt", "genstand"]
+
+        if len(result) < 3 or result in bad_words:
+            print("⚠️ Weak Gemini result → fallback")
+            return "brugt møbel"
 
         return result
 
     except Exception as e:
         print("Gemini error:", e)
-        return "stol rattan"
+        return "brugt møbel"
 
 
-# 🔍 SerpAPI søgning (FORBEDRET)
+# 🔍 SerpAPI søgning
 def search_prices(query):
     try:
         print(f"🔍 Searching for: {query}")
@@ -94,16 +98,17 @@ def search_prices(query):
         prices = []
 
         # shopping results
-        for result in data.get("shopping_results", []):
-            if "price" in result:
-                digits = "".join(c for c in result["price"] if c.isdigit())
+        for r in data.get("shopping_results", []):
+            if "price" in r:
+                digits = "".join(c for c in r["price"] if c.isdigit())
                 if digits:
                     prices.append(int(digits))
 
-        # fallback: organic snippets (ofte DBA lignende)
-        for result in data.get("organic_results", []):
-            snippet = result.get("snippet", "")
+        # organic fallback (fx DBA snippets)
+        for r in data.get("organic_results", []):
+            snippet = r.get("snippet", "")
             digits = "".join(c for c in snippet if c.isdigit())
+
             if digits:
                 val = int(digits)
                 if 50 < val < 20000:
@@ -131,7 +136,7 @@ async def analyze(file: UploadFile = File(...)):
     # 🔍 2. SerpAPI
     prices = search_prices(description)
 
-    # 🔥 3. Rens priser (fjern outliers)
+    # 🔥 3. Rens priser
     clean_prices = [p for p in prices if 50 < p < 10000]
     print("✅ Filtered prices:", clean_prices)
 
