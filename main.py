@@ -39,7 +39,7 @@ def detect_object(image_bytes):
         client = genai.Client(api_key=GEMINI_API_KEY)
 
         response = client.models.generate_content(
-            model="gemini-1.5-pro",
+            model="gemini-1.5-flash"
             contents=[
                 types.Content(
                     parts=[
