@@ -1,12 +1,16 @@
 import os
 import io
-import requests
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from google import genai
 from google.genai import types
-from PIL import Image
+
+print("🔥 AI PRICING AGENT v18 🔥")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
 
 app = FastAPI()
 
@@ -18,97 +22,73 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("🔥 AI PRICING AGENT v16 🔥")
 
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-print("🔑 SERPAPI:", "OK" if SERPAPI_KEY else "MISSING")
-print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
-
-
+# ---------------- ROOT ----------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v16"}
+    return {"status": "ok", "version": "v18"}
 
 
-# ---------------- GEMINI ----------------
-def detect_object(image_bytes):
+# ---------------- LIST MODELS ----------------
+@app.get("/models")
+def list_models():
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
+        models = client.models.list()
 
-        prompt = "Hvad er dette objekt? Svar kort på dansk, fx: stol, sofa, bord"
+        result = []
+        for m in models:
+            result.append(m.name)
 
-        response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
-            contents=[
-                types.Content(
-                    parts=[
-                        types.Part(text=prompt),
-                        types.Part(
-                            inline_data=types.Blob(
-                                mime_type="image/jpeg",
-                                data=image_bytes
+        print("📦 MODELS:", result)
+
+        return {"models": result}
+
+    except Exception as e:
+        print("🚨 MODEL LIST FEJL:", str(e))
+        return {"error": str(e)}
+
+
+# ---------------- GEMINI CALL ----------------
+def call_gemini(client, image_bytes):
+    test_models = [
+        "models/gemini-1.5-flash-latest",
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "models/gemini-1.0-pro"
+    ]
+
+    for model in test_models:
+        try:
+            print("⚡ TRY MODEL:", model)
+
+            response = client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Content(
+                        parts=[
+                            types.Part(text="Hvad er dette objekt? Svar kort."),
+                            types.Part(
+                                inline_data=types.Blob(
+                                    mime_type="image/jpeg",
+                                    data=image_bytes
+                                )
                             )
-                        )
-                    ]
-                )
-            ]
-        )
+                        ]
+                    )
+                ]
+            )
 
-        text = (response.text or "").lower().strip()
-        print("🧠 GEMINI RAW:", text)
+            text = (response.text or "").strip()
+            print("🧠 GEMINI:", text)
 
-        if not text:
-            return None, None
+            if text:
+                return text
 
-        words = [w.strip() for w in text.split(",") if w.strip()]
+        except Exception as e:
+            print("❌ FAIL:", model, str(e))
 
-        return words[0], words
-
-    except Exception as e:
-        print("🚨 GEMINI FEJL:", str(e))
-        return None, None
-
-
-# ---------------- SERP ----------------
-def get_prices(query):
-    try:
-        print("🔍 SEARCH:", query)
-
-        url = "https://serpapi.com/search.json"
-        params = {
-            "q": f"{query} brugt",
-            "hl": "da",
-            "gl": "dk",
-            "api_key": SERPAPI_KEY
-        }
-
-        data = requests.get(url, params=params).json()
-
-        prices = []
-
-        if "shopping_results" in data:
-            for item in data["shopping_results"]:
-                price = item.get("price")
-                if price:
-                    try:
-                        p = int(
-                            price.replace("kr.", "")
-                            .replace("kr", "")
-                            .replace(".", "")
-                            .strip()
-                        )
-                        prices.append(p)
-                    except:
-                        pass
-
-        print("💰 FOUND:", len(prices))
-        return prices
-
-    except Exception as e:
-        print("🚨 SERP FEJL:", str(e))
-        return []
+    return None
 
 
 # ---------------- ANALYZE ----------------
@@ -120,60 +100,29 @@ async def analyze(file: UploadFile = File(...)):
         contents = await file.read()
         print("📷 SIZE:", len(contents))
 
-        # --- image load ---
-        try:
-            image = Image.open(io.BytesIO(contents))
-        except Exception as e:
-            return {
-                "name": "Billede fejl",
-                "price": 0,
-                "prices_found": 0,
-                "error": str(e)
-            }
+        # compress
+        from PIL import Image
 
-        # --- compress ---
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=60)
-        img = buffer.getvalue()
+        image = Image.open(io.BytesIO(contents))
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=60)
+        img = buf.getvalue()
 
         print("📦 COMPRESSED:", len(img))
 
-        # --- detect ---
-        name, keywords = detect_object(img)
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
-        if not name:
+        result = call_gemini(client, img)
+
+        if not result:
             return {
-                "name": "Gemini fejlede",
-                "price": 0,
-                "prices_found": 0
-            }
-
-        print("🧠 OBJECT:", name, keywords)
-
-        # --- search ---
-        all_prices = []
-
-        for kw in keywords:
-            all_prices += get_prices(kw)
-
-        if not all_prices:
-            print("⚠️ fallback søgning")
-            all_prices += get_prices(name)
-
-        if all_prices:
-            avg = int(sum(all_prices) / len(all_prices))
-            print("💰 RESULT:", name, avg)
-
-            return {
-                "name": name,
-                "price": avg,
-                "prices_found": len(all_prices)
+                "name": "Ingen model virkede",
+                "price": 0
             }
 
         return {
-            "name": name,
-            "price": 0,
-            "prices_found": 0
+            "name": result,
+            "price": 100
         }
 
     except Exception as e:
@@ -181,6 +130,5 @@ async def analyze(file: UploadFile = File(...)):
         return {
             "name": "Server fejl",
             "price": 0,
-            "prices_found": 0,
             "error": str(e)
         }
