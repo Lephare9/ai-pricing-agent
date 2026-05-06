@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
 
-print("🔥 AI PRICING AGENT v18 🔥")
+print("🔥 AI PRICING AGENT v19 🔥")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -14,6 +14,7 @@ print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
 
 app = FastAPI()
 
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,76 +23,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ---------------- ROOT ----------------
+# --- ROOT ---
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v18"}
+    return {"status": "ok", "version": "v19"}
 
 
-# ---------------- LIST MODELS ----------------
+# --- MODELS DEBUG ---
 @app.get("/models")
 def list_models():
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         models = client.models.list()
-
-        result = []
-        for m in models:
-            result.append(m.name)
-
-        print("📦 MODELS:", result)
-
-        return {"models": result}
-
+        return {"models": [m.name for m in models]}
     except Exception as e:
-        print("🚨 MODEL LIST FEJL:", str(e))
         return {"error": str(e)}
 
 
-# ---------------- GEMINI CALL ----------------
-def call_gemini(client, image_bytes):
-    test_models = [
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-pro",
-        "models/gemini-1.0-pro"
-    ]
-
-    for model in test_models:
-        try:
-            print("⚡ TRY MODEL:", model)
-
-            response = client.models.generate_content(
-                model=model,
-                contents=[
-                    types.Content(
-                        parts=[
-                            types.Part(text="Hvad er dette objekt? Svar kort."),
-                            types.Part(
-                                inline_data=types.Blob(
-                                    mime_type="image/jpeg",
-                                    data=image_bytes
-                                )
-                            )
-                        ]
-                    )
-                ]
-            )
-
-            text = (response.text or "").strip()
-            print("🧠 GEMINI:", text)
-
-            if text:
-                return text
-
-        except Exception as e:
-            print("❌ FAIL:", model, str(e))
-
-    return None
-
-
-# ---------------- ANALYZE ----------------
+# --- ANALYZE ---
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     print("=== /analyze ===")
@@ -100,35 +49,49 @@ async def analyze(file: UploadFile = File(...)):
         contents = await file.read()
         print("📷 SIZE:", len(contents))
 
-        # compress
+        # --- compress image ---
         from PIL import Image
 
         image = Image.open(io.BytesIO(contents))
-        buf = io.BytesIO()
-        image.save(buf, format="JPEG", quality=60)
-        img = buf.getvalue()
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=60)
+        image_bytes = buffer.getvalue()
 
-        print("📦 COMPRESSED:", len(img))
+        print("📦 COMPRESSED:", len(image_bytes))
 
+        # --- Gemini client ---
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        result = call_gemini(client, img)
+        # --- Gemini call (KORREKT FORMAT) ---
+        response = client.models.generate_content(
+            model="models/gemini-2.5-flash",
+            contents=[
+                "Hvad er dette objekt? Svar kort.",
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type="image/jpeg"
+                )
+            ]
+        )
 
-        if not result:
+        result_text = (response.text or "").strip()
+        print("🧠 GEMINI:", result_text)
+
+        if not result_text:
             return {
-                "name": "Ingen model virkede",
+                "name": "Ingen analyse",
                 "price": 0
             }
 
         return {
-            "name": result,
+            "name": result_text,
             "price": 100
         }
 
     except Exception as e:
-        print("🔥 CRASH:", str(e))
+        print("🚨 FEJL:", str(e))
         return {
-            "name": "Server fejl",
+            "name": "Fejl",
             "price": 0,
             "error": str(e)
         }
