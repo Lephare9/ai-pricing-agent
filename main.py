@@ -1,168 +1,181 @@
-from fastapi import FastAPI, File, UploadFile
+print("🔥 AI PRICING AGENT v4 🔥")
+
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 import base64
-import google.generativeai as genai
-import traceback
+import io
+import re
+from statistics import median
+from PIL import Image
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-SERP_API_KEY = os.getenv("SERP_API_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+# -------------------------
+# 🖼️ Komprimer billede
+# -------------------------
+def compress_image(image_bytes, max_size=800):
     try:
-        contents = await file.read()
-        image_base64 = base64.b64encode(contents).decode()
+        img = Image.open(io.BytesIO(image_bytes))
+        img.thumbnail((max_size, max_size))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75)
+        return buf.getvalue()
+    except:
+        return image_bytes
 
-        # ------------------------
-        # 1. GEMINI (object + text)
-        # ------------------------
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-            response = model.generate_content([
-                {"mime_type": "image/jpeg", "data": contents},
-                """Hvad er objektet? (kort svar)
-                Er der tekst på objektet? skriv den også.
-                Format:
-                OBJECT: ...
-                TEXT: ...
-                """
-            ])
+# -------------------------
+# 🔍 Gemini (simpel + stabil)
+# -------------------------
+def detect_object(image_bytes):
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
 
-            result = response.text.lower()
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
-            object_desc = "ukendt objekt"
-            text_found = ""
+        response = model.generate_content([
+            {"mime_type": "image/jpeg", "data": image_bytes},
+            "Hvad er dette? Svar med 2-3 ord på dansk. fx: 'rattan stol', 'trækasse', 'lænestol'"
+        ])
 
-            if "object:" in result:
-                object_desc = result.split("object:")[1].split("\n")[0].strip()
+        text = response.text.strip().lower()
 
-            if "text:" in result:
-                text_found = result.split("text:")[1].strip()
+        if not text or len(text) < 3:
+            return "møbel", ["møbel"]
 
-        except Exception as e:
-            print("Gemini fejl:", e)
-            object_desc = "ukendt objekt"
-            text_found = ""
+        return text, [text]
 
-        print("OBJECT:", object_desc)
-        print("TEXT:", text_found)
+    except Exception as e:
+        print("Gemini fejl:", e)
+        return "møbel", ["møbel"]
 
-        # ------------------------
-        # 2. SEARCH (DBA / SALG)
-        # ------------------------
-        queries = [
-            f"{object_desc} dba",
-            f"{object_desc} til salg",
-            f"{object_desc} marketplace",
-            f"{object_desc} vintage"
-        ]
 
-        if text_found:
-            queries.insert(0, f"{text_found} dba")
+# -------------------------
+# 🔎 Google Lens (SerpAPI)
+# -------------------------
+def reverse_image_search(image_bytes):
+    try:
+        image_base64 = base64.b64encode(image_bytes).decode()
+
+        params = {
+            "engine": "google_lens",
+            "api_key": SERPAPI_KEY,
+            "image_content": image_base64
+        }
+
+        res = requests.get("https://serpapi.com/search", params=params, timeout=15)
+        data = res.json()
+
+        titles = []
+
+        if "visual_matches" in data:
+            for item in data["visual_matches"][:5]:
+                if "title" in item:
+                    titles.append(item["title"].lower())
+
+        return " ".join(titles)
+
+    except Exception as e:
+        print("Lens fejl:", e)
+        return ""
+
+
+# -------------------------
+# 💰 DBA søgning (bedre)
+# -------------------------
+def search_prices(query):
+    try:
+        params = {
+            "engine": "google",
+            "q": f"site:dba.dk {query}",
+            "api_key": SERPAPI_KEY,
+            "gl": "dk",
+            "hl": "da"
+        }
+
+        res = requests.get("https://serpapi.com/search", params=params, timeout=10)
+        data = res.json()
 
         prices = []
 
-        for query in queries:
-            try:
-                print("Searching:", query)
+        for r in data.get("organic_results", []):
+            text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
 
-                params = {
-                    "engine": "google",
-                    "q": query,
-                    "api_key": SERP_API_KEY
-                }
+            matches = re.findall(r'(\d[\d.]*)\s*(kr|,-)', text)
 
-                r = requests.get("https://serpapi.com/search", params=params)
+            for m in matches:
+                price = int(m[0].replace(".", ""))
 
-                try:
-                    data = r.json()
-                except:
-                    print("Ikke JSON:", r.text)
-                    continue
+                if 25 <= price <= 15000:
+                    prices.append(price)
 
-                for res in data.get("organic_results", [])[:5]:
-                    snippet = res.get("snippet", "").lower()
+        return prices[:10]
 
-                    # skip nypris
-                    if "ny" in snippet:
-                        continue
+    except Exception as e:
+        print("Search fejl:", e)
+        return []
 
-                    digits = ''.join(c for c in snippet if c.isdigit())
 
-                    if digits:
-                        price = int(digits)
+# -------------------------
+# 🚀 ENDPOINT
+# -------------------------
+@app.post("/analyze")
+async def analyze(file: UploadFile = File(...)):
+    print("=== /analyze ===")
 
-                        # filter støj
-                        if 20 < price < 5000:
-                            prices.append(price)
+    contents = await file.read()
+    compressed = compress_image(contents)
 
-            except Exception:
-                print("Query fejlede:", query)
+    # 1. hvad er det
+    name, keywords = detect_object(compressed)
 
-        # ------------------------
-        # 3. FALLBACK: LENS
-        # ------------------------
-        if not prices:
-            try:
-                print("Fallback: Google Lens")
+    # 2. lens hjælper
+    lens_text = reverse_image_search(compressed)
 
-                params = {
-                    "engine": "google_lens",
-                    "api_key": SERP_API_KEY,
-                    "image_base64": image_base64
-                }
+    # 3. søgning
+    query = f"{name} {lens_text} til salg"
+    prices = search_prices(query)
 
-                r = requests.get("https://serpapi.com/search", params=params)
-                data = r.json()
+    # fallback
+    if not prices:
+        prices = search_prices(f"{name} møbel til salg")
 
-                for item in data.get("visual_matches", [])[:5]:
-                    price_str = item.get("price", "")
-                    digits = ''.join(c for c in price_str if c.isdigit())
+    # beregn pris
+    if prices:
+        prices.sort()
+        cut = max(1, len(prices)//5)
+        trimmed = prices[cut:-cut] if len(prices) > 4 else prices
 
-                    if digits:
-                        price = int(digits)
-                        if 20 < price < 5000:
-                            prices.append(price)
+        final_price = int(median(trimmed))
+        min_price = min(trimmed)
+        max_price = max(trimmed)
+    else:
+        final_price = 100
+        min_price = 50
+        max_price = 200
 
-            except:
-                print("Lens fejlede")
+    return {
+        "description": name,
+        "price": f"{final_price} kr",
+        "price_range": f"{min_price}–{max_price} kr",
+        "hits": len(prices)
+    }
 
-        # ------------------------
-        # 4. FINAL PRICE (median)
-        # ------------------------
-        if prices:
-            prices = sorted(prices)
-            mid = len(prices) // 2
-            final_price = prices[mid]
-        else:
-            # sidste fallback
-            if "kasse" in object_desc:
-                final_price = 80
-            elif "stol" in object_desc:
-                final_price = 250
-            else:
-                final_price = 100
 
-        return {
-            "description": object_desc,
-            "price": f"{final_price} kr"
-        }
-
-    except Exception:
-        print("TOTAL CRASH:")
-        print(traceback.format_exc())
-        return {"description": "Systemfejl", "price": "0 kr"}
+@app.get("/")
+def root():
+    return {"status": "ok"}
