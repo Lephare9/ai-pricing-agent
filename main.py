@@ -1,4 +1,4 @@
-print("🔥 AI PRICING AGENT v12 🔥")
+print("🔥 AI PRICING AGENT v13 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,8 @@ import io
 import re
 from statistics import median
 from PIL import Image
+
+from google import genai   # ✅ NY SDK
 
 app = FastAPI()
 
@@ -40,42 +42,38 @@ def compress_image(image_bytes, max_size=800):
         print(f"📦 COMPRESSED: {len(image_bytes)} → {len(compressed)}")
 
         return compressed
-
     except Exception as e:
         print("Compress fejl:", e)
         return image_bytes
 
 
 # -------------------------
-# 🧠 GEMINI
+# 🧠 GEMINI (NY SDK)
 # -------------------------
 def detect_object(image_bytes):
     try:
-        import google.generativeai as genai
-
-        genai.configure(api_key=GEMINI_API_KEY)
-
-        # ✅ MODEL DER VIRKER
-        model = genai.GenerativeModel("gemini-1.5-pro-latest")
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
         prompt = """
-Hvad er dette objekt?
+Hvad er dette objekt? Svar kort på dansk.
 
-Svar KUN sådan:
+Format:
 navn, søgeord1, søgeord2
 
 Eksempel:
 trætønde, vintønde, træ tønde
 """
 
-        # ✅ VIGTIGT: prompt først!
-        response = model.generate_content([
-            prompt,
-            {
-                "mime_type": "image/jpeg",
-                "data": image_bytes
-            }
-        ])
+        response = client.models.generate_content(
+            model="gemini-1.5-pro",   # ✅ virker i ny SDK
+            contents=[
+                prompt,
+                {
+                    "mime_type": "image/jpeg",
+                    "data": image_bytes
+                }
+            ]
+        )
 
         text = (response.text or "").lower().strip()
 
@@ -84,9 +82,7 @@ trætønde, vintønde, træ tønde
         parts = [p.strip() for p in text.split(",") if p.strip()]
 
         if parts:
-            name = parts[0]
-            keywords = parts[:3]
-            return name, keywords
+            return parts[0], parts[:3]
 
         return None, None
 
@@ -152,10 +148,9 @@ async def analyze(file: UploadFile = File(...)):
     # 🧠 Gemini
     name, keywords = detect_object(compressed)
 
-    # ❗ STOP hvis Gemini fejler
     if not name:
         return {
-            "description": "Gemini fejlede",
+            "description": "Kunne ikke analysere billede",
             "price": "0 kr",
             "price_range": "",
             "hits": 0
@@ -171,7 +166,6 @@ async def analyze(file: UploadFile = File(...)):
         all_prices.extend(prices)
 
     if not all_prices:
-        print("⚠️ ingen priser fundet")
         return {
             "description": name,
             "price": "Ingen data",
@@ -204,4 +198,4 @@ async def analyze(file: UploadFile = File(...)):
 # -------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v12"}
+    return {"status": "ok", "version": "v13"}
