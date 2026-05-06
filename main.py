@@ -1,15 +1,13 @@
-import os
-import base64
-import requests
-import statistics
-import re
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+import requests
+import os
+import base64
 import google.generativeai as genai
+import traceback
 
 app = FastAPI()
 
-# CORS (vigtigt)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,159 +16,92 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Keys
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-model = genai.GenerativeModel("gemini-1.5-flash")
-
-
-# ------------------------
-# HELPERS
-# ------------------------
-
-def extract_prices(text):
-    prices = re.findall(r"\d{2,6}", text)
-    cleaned = [int(p) for p in prices if 10 < int(p) < 50000]
-    return cleaned
-
-
-def serpapi_google_lens(image_base64):
-    url = "https://serpapi.com/search"
-
-    params = {
-        "engine": "google_lens",
-        "api_key": SERPAPI_KEY,
-        "image_content": image_base64
-    }
-
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    prices = []
-
-    # visuelle matches
-    for item in data.get("visual_matches", []):
-        if "price" in item:
-            prices += extract_prices(item["price"])
-
-    return prices
-
-
-def serpapi_text_search(query):
-    url = "https://serpapi.com/search"
-
-    params = {
-        "engine": "google",
-        "q": query,
-        "api_key": SERPAPI_KEY
-    }
-
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    prices = []
-
-    for result in data.get("organic_results", []):
-        text = result.get("title", "") + " " + result.get("snippet", "")
-        prices += extract_prices(text)
-
-    return prices
-
-
-# ------------------------
-# MAIN ENDPOINT
-# ------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    print("=== /analyze called ===")
-
-    image_bytes = await file.read()
-    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    # ------------------------
-    # 1. GEMINI ANALYSE
-    # ------------------------
-
     try:
-        response = model.generate_content([
-            {
-                "mime_type": "image/jpeg",
-                "data": image_base64
-            },
-            """
-            Hvad er dette objekt?
-            Er der tekst på objektet?
-            Returnér:
-            - kort navn
-            - tekst hvis nogen
-            """
-        ])
+        print("=== /analyze called ===")
 
-        gemini_text = response.text.lower()
-        print("Gemini:", gemini_text)
+        contents = await file.read()
+        image_base64 = base64.b64encode(contents).decode()
 
-    except Exception as e:
-        print("Gemini fejl:", e)
-        gemini_text = ""
+        # ------------------------
+        # 1. GEMINI ANALYSE
+        # ------------------------
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-    # ------------------------
-    # 2. GOOGLE LENS (IMAGE SEARCH)
-    # ------------------------
+            response = model.generate_content([
+                {"mime_type": "image/jpeg", "data": contents},
+                "Hvad er dette objekt? Beskriv kort og nævn tekst på objektet hvis muligt."
+            ])
 
-    print("🔎 Google Lens search...")
-    prices = serpapi_google_lens(image_base64)
-    print("Lens prices:", prices)
+            description = response.text.lower()
+            print("Gemini:", description)
 
-    # ------------------------
-    # 3. FALLBACK: tekst søgning
-    # ------------------------
+        except Exception as e:
+            print("Gemini fejl:", e)
+            description = "ukendt objekt"
 
-    if len(prices) < 3:
-        print("🔎 Text fallback...")
+        # ------------------------
+        # 2. GOOGLE LENS (SerpAPI)
+        # ------------------------
+        prices = []
 
-        query = gemini_text.strip()
+        try:
+            params = {
+                "engine": "google_lens",
+                "api_key": SERP_API_KEY,
+                "image_base64": image_base64
+            }
 
-        if len(query) < 5:
-            query = "brugt møbel"
+            r = requests.get("https://serpapi.com/search", params=params)
 
-        more_prices = serpapi_text_search(query)
-        print("Text prices:", more_prices)
+            try:
+                data = r.json()
+            except Exception:
+                print("SerpAPI ikke JSON:", r.text)
+                data = {}
 
-        prices += more_prices
+            visual_matches = data.get("visual_matches", [])
 
-    # ------------------------
-    # 4. FALLBACK: generisk kategori
-    # ------------------------
+            for item in visual_matches[:5]:
+                title = item.get("title", "")
+                price_str = item.get("price", "")
 
-    if len(prices) < 3:
-        print("🔎 Generic fallback...")
+                if price_str:
+                    price_num = ''.join(c for c in price_str if c.isdigit())
+                    if price_num:
+                        prices.append(int(price_num))
 
-        generic_prices = serpapi_text_search("trækasse brugt")
-        prices += generic_prices
+        except Exception:
+            print("SerpAPI crash:")
+            print(traceback.format_exc())
 
-    # ------------------------
-    # 5. PRIS BEREGNING
-    # ------------------------
+        # ------------------------
+        # 3. FALLBACK LOGIK
+        # ------------------------
+        if prices:
+            avg_price = int(sum(prices) / len(prices))
+        else:
+            print("Ingen priser → fallback")
 
-    if prices:
-        price = int(statistics.median(prices))
-    else:
-        price = 75  # fallback baseline
+            if "kasse" in description or "crate" in description:
+                avg_price = 80
+            elif "stol" in description:
+                avg_price = 250
+            else:
+                avg_price = 100
 
-    # ------------------------
-    # 6. BESKRIVELSE
-    # ------------------------
+        return {
+            "description": description,
+            "price": f"{avg_price} kr"
+        }
 
-    description = gemini_text.split("\n")[0][:50]
-
-    if not description:
-        description = "genstand"
-
-    print("FINAL:", description, price)
-
-    return {
-        "description": description,
-        "price": f"{price} kr"
-    }
+    except Exception:
+        print("TOTAL CRASH:")
+        print(traceback.format_exc())
+        return {"description": "Systemfejl", "price": "0 kr"}
