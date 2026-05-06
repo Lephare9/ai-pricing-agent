@@ -1,4 +1,4 @@
-print("🔥 AI PRICING AGENT v11 🔥")
+print("🔥 AI PRICING AGENT v12 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +26,7 @@ print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
 
 
 # -------------------------
-# 🖼️ KOMPRESSER BILLEDE
+# 🖼️ KOMPRESS
 # -------------------------
 def compress_image(image_bytes, max_size=800):
     try:
@@ -47,38 +47,35 @@ def compress_image(image_bytes, max_size=800):
 
 
 # -------------------------
-# 🧠 GEMINI (NY SDK)
+# 🧠 GEMINI
 # -------------------------
 def detect_object(image_bytes):
     try:
-        from google import genai
+        import google.generativeai as genai
 
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        genai.configure(api_key=GEMINI_API_KEY)
+
+        # ✅ MODEL DER VIRKER
+        model = genai.GenerativeModel("gemini-1.5-pro-latest")
 
         prompt = """
 Hvad er dette objekt?
 
 Svar KUN sådan:
-sofa, træ sofa, retro sofa
+navn, søgeord1, søgeord2
+
+Eksempel:
+trætønde, vintønde, træ tønde
 """
 
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=[
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": image_bytes
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
+        # ✅ VIGTIGT: prompt først!
+        response = model.generate_content([
+            prompt,
+            {
+                "mime_type": "image/jpeg",
+                "data": image_bytes
+            }
+        ])
 
         text = (response.text or "").lower().strip()
 
@@ -87,17 +84,19 @@ sofa, træ sofa, retro sofa
         parts = [p.strip() for p in text.split(",") if p.strip()]
 
         if parts:
-            return parts[0], parts[:3]
+            name = parts[0]
+            keywords = parts[:3]
+            return name, keywords
 
-        return "genstand", ["møbel"]
+        return None, None
 
     except Exception as e:
-        print("🚨 GEMINI FEJL:", e)
-        return "genstand", ["møbel"]
+        print("🚨 GEMINI FEJL:", str(e))
+        return None, None
 
 
 # -------------------------
-# 💰 PRISSØGNING
+# 💰 SEARCH
 # -------------------------
 def search_prices(query):
     try:
@@ -126,7 +125,6 @@ def search_prices(query):
 
             for m in matches:
                 price = int(m.replace(".", ""))
-
                 if 25 <= price <= 15000:
                     prices.append(price)
 
@@ -144,7 +142,7 @@ def search_prices(query):
 # -------------------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    print("=== /analyze ===")
+    print("\n=== /analyze ===")
 
     contents = await file.read()
     print(f"📷 SIZE: {len(contents)}")
@@ -153,6 +151,15 @@ async def analyze(file: UploadFile = File(...)):
 
     # 🧠 Gemini
     name, keywords = detect_object(compressed)
+
+    # ❗ STOP hvis Gemini fejler
+    if not name:
+        return {
+            "description": "Gemini fejlede",
+            "price": "0 kr",
+            "price_range": "",
+            "hits": 0
+        }
 
     print("🧠 OBJECT:", name, keywords)
 
@@ -163,36 +170,29 @@ async def analyze(file: UploadFile = File(...)):
         prices = search_prices(kw)
         all_prices.extend(prices)
 
-    # fallback hvis ingen hits
     if not all_prices:
-        print("⚠️ fallback søgning")
-        all_prices.extend(search_prices(name))
+        print("⚠️ ingen priser fundet")
+        return {
+            "description": name,
+            "price": "Ingen data",
+            "price_range": "",
+            "hits": 0
+        }
 
-    # -------------------------
-    # 📊 BEREGN PRIS
-    # -------------------------
-    if all_prices:
-        all_prices.sort()
+    # 📊 beregn
+    all_prices.sort()
 
-        cut = max(1, len(all_prices) // 5)
-        trimmed = all_prices[cut:-cut] if len(all_prices) > 4 else all_prices
+    cut = max(1, len(all_prices) // 5)
+    trimmed = all_prices[cut:-cut] if len(all_prices) > 4 else all_prices
 
-        final_price = int(median(trimmed))
-        min_price = min(trimmed)
-        max_price = max(trimmed)
+    final_price = int(median(trimmed))
+    min_price = min(trimmed)
+    max_price = max(trimmed)
 
-        label = name
-
-    else:
-        final_price = 100
-        min_price = 50
-        max_price = 200
-        label = name
-
-    print(f"💰 RESULT: {label} → {final_price} kr")
+    print(f"💰 RESULT: {name} → {final_price} kr")
 
     return {
-        "description": label,
+        "description": name,
         "price": f"{final_price} kr",
         "price_range": f"{min_price}–{max_price} kr",
         "hits": len(all_prices)
@@ -204,4 +204,4 @@ async def analyze(file: UploadFile = File(...)):
 # -------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v11"}
+    return {"status": "ok", "version": "v12"}
