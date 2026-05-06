@@ -1,10 +1,9 @@
-print("🔥 AI PRICING AGENT v10 🔥")
+print("🔥 AI PRICING AGENT v11 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
-import base64
 import io
 import re
 from statistics import median
@@ -21,6 +20,9 @@ app.add_middleware(
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+print("🔑 SERPAPI:", "OK" if SERPAPI_KEY else "MISSING")
+print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
 
 
 # -------------------------
@@ -45,39 +47,46 @@ def compress_image(image_bytes, max_size=800):
 
 
 # -------------------------
-# 🧠 GEMINI (OBJEKT GENKEND)
+# 🧠 GEMINI (NY SDK)
 # -------------------------
 def detect_object(image_bytes):
     try:
-        import google.generativeai as genai
+        from google import genai
 
-        genai.configure(api_key=GEMINI_API_KEY)
-
-        model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
         prompt = """
 Hvad er dette objekt?
 
-Svar KUN med:
-- kort dansk navn (2-3 ord)
-- 2 alternative søgeord
-
-Format:
+Svar KUN sådan:
 sofa, træ sofa, retro sofa
 """
 
-        response = model.generate_content([
-            {"mime_type": "image/jpeg", "data": image_bytes},
-            prompt
-        ])
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": image_bytes
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
 
-        text = response.text.lower().strip()
+        text = (response.text or "").lower().strip()
 
-        print("🧠 GEMINI:", text)
+        print("🧠 GEMINI RAW:", text)
 
         parts = [p.strip() for p in text.split(",") if p.strip()]
 
-        if len(parts) >= 1:
+        if parts:
             return parts[0], parts[:3]
 
         return "genstand", ["møbel"]
@@ -113,16 +122,15 @@ def search_prices(query):
         for r in data.get("organic_results", []):
             text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
 
-            matches = re.findall(
-                r'(\d[\d.]{1,6})\s*(?:kr|,-|dkk)',
-                text
-            )
+            matches = re.findall(r'(\d[\d.]{1,6})\s*(?:kr|,-|dkk)', text)
 
             for m in matches:
                 price = int(m.replace(".", ""))
 
                 if 25 <= price <= 15000:
                     prices.append(price)
+
+        print(f"💰 FOUND {len(prices)} prices")
 
         return prices
 
@@ -161,7 +169,7 @@ async def analyze(file: UploadFile = File(...)):
         all_prices.extend(search_prices(name))
 
     # -------------------------
-    # 📊 BEREGN
+    # 📊 BEREGN PRIS
     # -------------------------
     if all_prices:
         all_prices.sort()
@@ -196,4 +204,4 @@ async def analyze(file: UploadFile = File(...)):
 # -------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v10"}
+    return {"status": "ok", "version": "v11"}
