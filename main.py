@@ -1,10 +1,9 @@
-print("🔥 AI PRICING AGENT v4 🔥")
+print("🔥 AI PRICING AGENT V6.2 🔥")
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
-import base64
 import io
 import re
 from statistics import median
@@ -24,12 +23,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # -------------------------
-# 🖼️ Komprimer billede
+# Komprimer billede
 # -------------------------
-def compress_image(image_bytes, max_size=800):
+def compress_image(image_bytes):
     try:
         img = Image.open(io.BytesIO(image_bytes))
-        img.thumbnail((max_size, max_size))
+        img.thumbnail((800, 800))
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=75)
         return buf.getvalue()
@@ -38,7 +37,7 @@ def compress_image(image_bytes, max_size=800):
 
 
 # -------------------------
-# 🔍 Gemini (simpel + stabil)
+# Gemini (simpel)
 # -------------------------
 def detect_object(image_bytes):
     try:
@@ -49,81 +48,64 @@ def detect_object(image_bytes):
 
         response = model.generate_content([
             {"mime_type": "image/jpeg", "data": image_bytes},
-            "Hvad er dette? Svar med 2-3 ord på dansk. fx: 'rattan stol', 'trækasse', 'lænestol'"
+            "Hvad er dette? svar 1-2 ord"
         ])
 
         text = response.text.strip().lower()
+        print("GEMINI:", text)
 
-        if not text or len(text) < 3:
-            return "møbel", ["møbel"]
+        if not text or len(text) < 2:
+            return "trækasse"   # fallback for test
 
-        return text, [text]
+        return text
 
     except Exception as e:
         print("Gemini fejl:", e)
-        return "møbel", ["møbel"]
+        return "trækasse"   # fallback for test
 
 
 # -------------------------
-# 🔎 Google Lens (SerpAPI)
+# Pris extraction
 # -------------------------
-def reverse_image_search(image_bytes):
-    try:
-        image_base64 = base64.b64encode(image_bytes).decode()
+def extract_prices(text):
+    matches = re.findall(r'(\d[\d.]*)\s*(kr|,-)', text.lower())
+    prices = []
 
-        params = {
-            "engine": "google_lens",
-            "api_key": SERPAPI_KEY,
-            "image_content": image_base64
-        }
+    for m in matches:
+        val = int(m[0].replace(".", ""))
+        if 20 < val < 20000:
+            prices.append(val)
 
-        res = requests.get("https://serpapi.com/search", params=params, timeout=15)
-        data = res.json()
-
-        titles = []
-
-        if "visual_matches" in data:
-            for item in data["visual_matches"][:5]:
-                if "title" in item:
-                    titles.append(item["title"].lower())
-
-        return " ".join(titles)
-
-    except Exception as e:
-        print("Lens fejl:", e)
-        return ""
+    return prices
 
 
 # -------------------------
-# 💰 DBA søgning (bedre)
+# Search
 # -------------------------
 def search_prices(query):
+    print("SEARCH:", query)
+
     try:
         params = {
             "engine": "google",
-            "q": f"site:dba.dk {query}",
+            "q": query,
             "api_key": SERPAPI_KEY,
             "gl": "dk",
             "hl": "da"
         }
 
-        res = requests.get("https://serpapi.com/search", params=params, timeout=10)
-        data = res.json()
+        r = requests.get("https://serpapi.com/search", params=params, timeout=10)
+        data = r.json()
 
         prices = []
 
-        for r in data.get("organic_results", []):
-            text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
+        for res in data.get("organic_results", []):
+            text = res.get("title", "") + " " + res.get("snippet", "")
+            found = extract_prices(text)
+            prices += found
 
-            matches = re.findall(r'(\d[\d.]*)\s*(kr|,-)', text)
-
-            for m in matches:
-                price = int(m[0].replace(".", ""))
-
-                if 25 <= price <= 15000:
-                    prices.append(price)
-
-        return prices[:10]
+        print("PRICES FOUND:", prices)
+        return prices
 
     except Exception as e:
         print("Search fejl:", e)
@@ -131,48 +113,44 @@ def search_prices(query):
 
 
 # -------------------------
-# 🚀 ENDPOINT
+# Endpoint
 # -------------------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    print("=== /analyze ===")
-
     contents = await file.read()
-    compressed = compress_image(contents)
+    img = compress_image(contents)
 
     # 1. hvad er det
-    name, keywords = detect_object(compressed)
+    name = detect_object(img)
 
-    # 2. lens hjælper
-    lens_text = reverse_image_search(compressed)
+    # 2. queries (meget simple!)
+    queries = [
+        f"site:dba.dk {name}",
+        f"{name} til salg"
+    ]
 
-    # 3. søgning
-    query = f"{name} {lens_text} til salg"
-    prices = search_prices(query)
+    all_prices = []
 
-    # fallback
-    if not prices:
-        prices = search_prices(f"{name} møbel til salg")
+    for q in queries:
+        p = search_prices(q)
+        all_prices += p
 
-    # beregn pris
-    if prices:
-        prices.sort()
-        cut = max(1, len(prices)//5)
-        trimmed = prices[cut:-cut] if len(prices) > 4 else prices
-
-        final_price = int(median(trimmed))
-        min_price = min(trimmed)
-        max_price = max(trimmed)
+    # 3. resultat
+    if all_prices:
+        all_prices.sort()
+        final = int(median(all_prices))
+        min_p = min(all_prices)
+        max_p = max(all_prices)
     else:
-        final_price = 100
-        min_price = 50
-        max_price = 200
+        final = 0
+        min_p = 0
+        max_p = 0
 
     return {
         "description": name,
-        "price": f"{final_price} kr",
-        "price_range": f"{min_price}–{max_price} kr",
-        "hits": len(prices)
+        "price": f"{final} kr",
+        "price_range": f"{min_p}–{max_p} kr",
+        "hits": len(all_prices)
     }
 
 
