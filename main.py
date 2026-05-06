@@ -21,18 +21,30 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 print("🚀 Backend starting...")
 
 
-# 🧠 Gemini analyse
+# 🧠 Gemini analyse (FORBEDRET)
 def analyze_with_gemini(image_bytes):
     try:
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
         url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
+        prompt = """
+Beskriv dette møbel så præcist som muligt.
+
+Svar KUN med:
+- type (stol, sofa, bord osv.)
+- materiale (træ, rattan, læder osv.)
+- stil (retro, moderne, dansk design hvis relevant)
+
+Eksempel:
+"rattan lænestol retro"
+"""
+
         payload = {
             "contents": [
                 {
                     "parts": [
-                        {"text": "Hvad er dette møbel? Svar kort og præcist."},
+                        {"text": prompt},
                         {
                             "inline_data": {
                                 "mime_type": "image/jpeg",
@@ -48,16 +60,22 @@ def analyze_with_gemini(image_bytes):
         data = res.json()
 
         text = data["candidates"][0]["content"]["parts"][0]["text"]
-        print("🧠 Gemini:", text)
+        result = text.strip().lower()
 
-        return text.strip()
+        print("🧠 Gemini result:", result)
+
+        # fallback hvis for generisk
+        if len(result) < 5 or "møbel" in result:
+            return "stol rattan"
+
+        return result
 
     except Exception as e:
         print("Gemini error:", e)
-        return "brugt møbel"
+        return "stol rattan"
 
 
-# 🔍 SerpAPI søgning
+# 🔍 SerpAPI søgning (FORBEDRET)
 def search_prices(query):
     try:
         print(f"🔍 Searching for: {query}")
@@ -65,7 +83,7 @@ def search_prices(query):
         url = "https://serpapi.com/search.json"
 
         params = {
-            "q": f"{query} brugt danmark pris",
+            "q": f"{query} brugt til salg danmark",
             "engine": "google",
             "api_key": SERPAPI_KEY
         }
@@ -75,13 +93,21 @@ def search_prices(query):
 
         prices = []
 
-        # prøv forskellige felter
+        # shopping results
         for result in data.get("shopping_results", []):
             if "price" in result:
-                price_str = result["price"]
-                digits = "".join(c for c in price_str if c.isdigit())
+                digits = "".join(c for c in result["price"] if c.isdigit())
                 if digits:
                     prices.append(int(digits))
+
+        # fallback: organic snippets (ofte DBA lignende)
+        for result in data.get("organic_results", []):
+            snippet = result.get("snippet", "")
+            digits = "".join(c for c in snippet if c.isdigit())
+            if digits:
+                val = int(digits)
+                if 50 < val < 20000:
+                    prices.append(val)
 
         print("💰 Raw prices:", prices)
 
@@ -105,7 +131,7 @@ async def analyze(file: UploadFile = File(...)):
     # 🔍 2. SerpAPI
     prices = search_prices(description)
 
-    # 🔥 3. Rens data (fjerner outliers)
+    # 🔥 3. Rens priser (fjern outliers)
     clean_prices = [p for p in prices if 50 < p < 10000]
     print("✅ Filtered prices:", clean_prices)
 
