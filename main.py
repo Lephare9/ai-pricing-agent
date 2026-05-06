@@ -1,97 +1,138 @@
 import os
-import io
-from fastapi import FastAPI, File, UploadFile
+import base64
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
+import requests
 
-from google import genai
-from google.genai import types
+print("🔥 AI PRICING AGENT v17 🔥")
 
-print("🔥 AI PRICING AGENT v19 🔥")
-
+# =========================
+# KEYS
+# =========================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
-print("🔑 GEMINI:", "OK" if GEMINI_API_KEY else "MISSING")
+if not GEMINI_API_KEY:
+    print("❌ GEMINI KEY MANGLER")
+else:
+    print("🔑 GEMINI: OK")
 
+if not SERPAPI_KEY:
+    print("❌ SERPAPI KEY MANGLER")
+else:
+    print("🔑 SERPAPI: OK")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+# =========================
+# APP
+# =========================
 app = FastAPI()
 
-# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # senere: din netlify url
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- ROOT ---
+# =========================
+# ROOT
+# =========================
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v19"}
+    return {"status": "ok", "version": "v17"}
 
-
-# --- MODELS DEBUG ---
-@app.get("/models")
-def list_models():
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        models = client.models.list()
-        return {"models": [m.name for m in models]}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# --- ANALYZE ---
+# =========================
+# ANALYZE
+# =========================
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     print("=== /analyze ===")
 
     try:
-        contents = await file.read()
-        print("📷 SIZE:", len(contents))
+        image_bytes = await file.read()
+        print(f"📷 SIZE: {len(image_bytes)}")
 
-        # --- compress image ---
-        from PIL import Image
+        # =========================
+        # GEMINI ANALYSE
+        # =========================
+        try:
+            model = genai.GenerativeModel("gemini-2.5-flash")
 
-        image = Image.open(io.BytesIO(contents))
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=60)
-        image_bytes = buffer.getvalue()
+            response = model.generate_content([
+                "Hvad er dette objekt? Svar kort (max 3 ord)",
+                image_bytes
+            ])
 
-        print("📦 COMPRESSED:", len(image_bytes))
+            text = response.text.strip().lower()
+            print("🧠 GEMINI:", text)
 
-        # --- Gemini client ---
-        client = genai.Client(api_key=GEMINI_API_KEY)
+            # fallback hvis model siger noget mærkeligt
+            if not text or len(text) > 50:
+                text = "genstand"
 
-        # --- Gemini call (KORREKT FORMAT) ---
-        response = client.models.generate_content(
-            model="models/gemini-2.5-flash",
-            contents=[
-                "Hvad er dette objekt? Svar kort.",
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type="image/jpeg"
-                )
-            ]
-        )
-
-        result_text = (response.text or "").strip()
-        print("🧠 GEMINI:", result_text)
-
-        if not result_text:
+        except Exception as e:
+            print("🚨 GEMINI FEJL:", str(e))
             return {
-                "name": "Ingen analyse",
-                "price": 0
+                "title": "Kunne ikke analysere billede",
+                "price": 0,
+                "results": []
             }
 
+        # =========================
+        # SERPAPI SEARCH
+        # =========================
+        try:
+            print("🔍 SEARCH:", text)
+
+            params = {
+                "engine": "google",
+                "q": f"{text} brugt pris",
+                "api_key": SERPAPI_KEY
+            }
+
+            r = requests.get("https://serpapi.com/search", params=params)
+            data = r.json()
+
+            prices = []
+
+            if "shopping_results" in data:
+                for item in data["shopping_results"]:
+                    if "price" in item:
+                        p = item["price"]
+                        # træk tal ud
+                        p = "".join(c for c in p if c.isdigit())
+                        if p:
+                            prices.append(int(p))
+
+            print("💰 FOUND:", prices)
+
+            if prices:
+                avg_price = int(sum(prices) / len(prices))
+            else:
+                avg_price = 100
+
+        except Exception as e:
+            print("🚨 SERPAPI FEJL:", str(e))
+            avg_price = 100
+            prices = []
+
+        # =========================
+        # RETURN
+        # =========================
         return {
-            "name": result_text,
-            "price": 100
+            "title": text,
+            "price": avg_price,
+            "results": prices
         }
 
     except Exception as e:
-        print("🚨 FEJL:", str(e))
+        print("🔥 CRASH:", str(e))
         return {
-            "name": "Fejl",
+            "title": "Fejl",
             "price": 0,
-            "error": str(e)
+            "results": []
         }
