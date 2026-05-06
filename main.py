@@ -1,27 +1,38 @@
 import os
-import base64
+import logging
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
 import requests
 
-print("🔥 AI PRICING AGENT v17 🔥")
+# =========================
+# SAFE IMPORT (undgår silent crash)
+# =========================
+try:
+    import google.generativeai as genai
+except Exception as e:
+    raise RuntimeError(
+        "google-generativeai mangler. Tilføj til requirements.txt"
+    )
 
 # =========================
-# KEYS
+# LOGGING
+# =========================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ai-pricing-agent")
+
+logger.info("🔥 AI PRICING AGENT v2 START")
+
+# =========================
+# ENV
 # =========================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
 if not GEMINI_API_KEY:
-    print("❌ GEMINI KEY MANGLER")
-else:
-    print("🔑 GEMINI: OK")
+    raise RuntimeError("GEMINI_API_KEY mangler")
 
 if not SERPAPI_KEY:
-    print("❌ SERPAPI KEY MANGLER")
-else:
-    print("🔑 SERPAPI: OK")
+    raise RuntimeError("SERPAPI_KEY mangler")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -32,7 +43,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # senere: din netlify url
+    allow_origins=["*"],  # senere: din Netlify URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,96 +54,122 @@ app.add_middleware(
 # =========================
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v17"}
+    return {"status": "ok", "version": "v2"}
+
+# =========================
+# GEMINI
+# =========================
+def detect_object(image_bytes: bytes, mime_type: str) -> str:
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    response = model.generate_content([
+        {
+            "mime_type": mime_type,
+            "data": image_bytes
+        },
+        "Identify the object in this image. Return ONLY 1-3 words."
+    ])
+
+    text = (response.text or "").strip().lower()
+
+    if not text or len(text) > 40:
+        logger.warning(f"⚠️ Bad Gemini output: {text}")
+        return "genstand"
+
+    return text
+
+
+# =========================
+# SERPAPI
+# =========================
+def fetch_prices(query: str):
+    try:
+        params = {
+            "engine": "google_shopping",
+            "q": query,
+            "api_key": SERPAPI_KEY
+        }
+
+        r = requests.get(
+            "https://serpapi.com/search",
+            params=params,
+            timeout=10
+        )
+
+        if r.status_code != 200:
+            logger.error(f"SERPAPI HTTP {r.status_code}")
+            return []
+
+        data = r.json()
+
+        prices = []
+
+        for item in data.get("shopping_results", []):
+            raw = item.get("price")
+            if not raw:
+                continue
+
+            digits = "".join(c for c in raw if c.isdigit())
+            if digits:
+                prices.append(int(digits))
+
+        return prices
+
+    except Exception as e:
+        logger.error(f"🚨 SERPAPI ERROR: {str(e)}")
+        return []
+
 
 # =========================
 # ANALYZE
 # =========================
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    print("=== /analyze ===")
+    logger.info("=== /analyze ===")
 
     try:
         image_bytes = await file.read()
-        print(f"📷 SIZE: {len(image_bytes)}")
 
-        # =========================
-        # GEMINI ANALYSE
-        # =========================
-        try:
-            model = genai.GenerativeModel("gemini-2.5-flash")
-
-            response = model.generate_content([
-                "Hvad er dette objekt? Svar kort (max 3 ord)",
-                image_bytes
-            ])
-
-            text = response.text.strip().lower()
-            print("🧠 GEMINI:", text)
-
-            # fallback hvis model siger noget mærkeligt
-            if not text or len(text) > 50:
-                text = "genstand"
-
-        except Exception as e:
-            print("🚨 GEMINI FEJL:", str(e))
+        if not image_bytes:
             return {
-                "title": "Kunne ikke analysere billede",
+                "title": "Ingen fil",
                 "price": 0,
                 "results": []
             }
 
-        # =========================
-        # SERPAPI SEARCH
-        # =========================
-        try:
-            print("🔍 SEARCH:", text)
+        logger.info(f"📷 SIZE: {len(image_bytes)}")
+        logger.info(f"📷 MIME: {file.content_type}")
 
-            params = {
-                "engine": "google",
-                "q": f"{text} brugt pris",
-                "api_key": SERPAPI_KEY
+        # GEMINI
+        try:
+            title = detect_object(image_bytes, file.content_type)
+            logger.info(f"🧠 OBJECT: {title}")
+        except Exception as e:
+            logger.error(f"GEMINI FAIL: {e}")
+            return {
+                "title": "Kunne ikke analysere",
+                "price": 0,
+                "results": []
             }
 
-            r = requests.get("https://serpapi.com/search", params=params)
-            data = r.json()
+        # SERPAPI
+        prices = fetch_prices(f"{title} used price")
 
-            prices = []
+        logger.info(f"💰 PRICES: {prices}")
 
-            if "shopping_results" in data:
-                for item in data["shopping_results"]:
-                    if "price" in item:
-                        p = item["price"]
-                        # træk tal ud
-                        p = "".join(c for c in p if c.isdigit())
-                        if p:
-                            prices.append(int(p))
+        avg_price = int(sum(prices) / len(prices)) if prices else 0
 
-            print("💰 FOUND:", prices)
-
-            if prices:
-                avg_price = int(sum(prices) / len(prices))
-            else:
-                avg_price = 100
-
-        except Exception as e:
-            print("🚨 SERPAPI FEJL:", str(e))
-            avg_price = 100
-            prices = []
-
-        # =========================
-        # RETURN
-        # =========================
         return {
-            "title": text,
+            "title": title,
             "price": avg_price,
             "results": prices
         }
 
     except Exception as e:
-        print("🔥 CRASH:", str(e))
+        logger.error(f"🔥 CRASH: {str(e)}")
+
         return {
-            "title": "Fejl",
+            "title": "Server fejl",
             "price": 0,
             "results": []
         }
