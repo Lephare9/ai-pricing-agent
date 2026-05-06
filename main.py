@@ -1,12 +1,15 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-import requests
 import os
 import base64
+import requests
+import statistics
+import re
+from fastapi import FastAPI, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
 
 app = FastAPI()
 
-# 🔓 CORS
+# CORS (vigtigt)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,154 +18,159 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Keys
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-print("🚀 Backend starting...")
-
-
-# 🧠 1. Gemini analyse (MEGET præcis)
-def analyze_with_gemini(image_bytes):
-    try:
-        base64_image = base64.b64encode(image_bytes).decode("utf-8")
-
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-        prompt = """
-Analyser billedet meget præcist.
-
-1. Hvad er objektet (fx stol, kasse, bord)?
-2. Hvilket materiale?
-3. Er der tekst på objektet? Skriv teksten.
-
-Svar KUN som én linje.
-
-Eksempel:
-"trækasse træ D.D.S.F Aalborg"
-"rattan stol retro"
-"""
-
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": base64_image
-                            }
-                        }
-                    ]
-                }
-            ]
-        }
-
-        res = requests.post(url, json=payload)
-        data = res.json()
-
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        result = text.strip().lower()
-
-        print("🧠 Gemini:", result)
-
-        if not result:
-            return "trækasse"
-
-        return result
-
-    except Exception as e:
-        print("Gemini error:", e)
-        return "trækasse"
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 
-# 🔍 2. SerpAPI søgning (EXACT MATCH fokus)
-def search_prices(query):
-    try:
-        print(f"🔍 Searching for: {query}")
+# ------------------------
+# HELPERS
+# ------------------------
 
-        url = "https://serpapi.com/search.json"
+def extract_prices(text):
+    prices = re.findall(r"\d{2,6}", text)
+    cleaned = [int(p) for p in prices if 10 < int(p) < 50000]
+    return cleaned
 
-        params = {
-            "q": f"{query} brugt til salg",
-            "engine": "google",
-            "api_key": SERPAPI_KEY,
-            "num": 20
-        }
 
-        res = requests.get(url, params=params)
-        data = res.json()
+def serpapi_google_lens(image_base64):
+    url = "https://serpapi.com/search"
 
-        prices = []
+    params = {
+        "engine": "google_lens",
+        "api_key": SERPAPI_KEY,
+        "image_content": image_base64
+    }
 
-        # 🛒 shopping results
-        for r in data.get("shopping_results", []):
-            if "price" in r:
-                digits = "".join(c for c in r["price"] if c.isdigit())
-                if digits:
-                    prices.append(int(digits))
+    response = requests.get(url, params=params)
+    data = response.json()
 
-        # 🌐 organic results (DBA / marketplace)
-        for r in data.get("organic_results", []):
-            snippet = (r.get("snippet") or "").lower()
-            title = (r.get("title") or "").lower()
+    prices = []
 
-            # 🔥 match query ord (bedre relevans)
-            if any(word in snippet or word in title for word in query.split()):
-                digits = "".join(c for c in snippet if c.isdigit())
+    # visuelle matches
+    for item in data.get("visual_matches", []):
+        if "price" in item:
+            prices += extract_prices(item["price"])
 
-                if digits:
-                    val = int(digits)
+    return prices
 
-                    if 50 < val < 20000:
-                        prices.append(val)
 
-        print("💰 Raw prices:", prices)
+def serpapi_text_search(query):
+    url = "https://serpapi.com/search"
 
-        return prices
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": SERPAPI_KEY
+    }
 
-    except Exception as e:
-        print("SerpAPI error:", e)
-        return []
+    response = requests.get(url, params=params)
+    data = response.json()
 
+    prices = []
+
+    for result in data.get("organic_results", []):
+        text = result.get("title", "") + " " + result.get("snippet", "")
+        prices += extract_prices(text)
+
+    return prices
+
+
+# ------------------------
+# MAIN ENDPOINT
+# ------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     print("=== /analyze called ===")
 
     image_bytes = await file.read()
-    print(f"File size: {len(image_bytes)} bytes")
+    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    # 🧠 1. Gemini
-    description = analyze_with_gemini(image_bytes)
+    # ------------------------
+    # 1. GEMINI ANALYSE
+    # ------------------------
 
-    # 🔍 2. Serp
-    prices = search_prices(description)
+    try:
+        response = model.generate_content([
+            {
+                "mime_type": "image/jpeg",
+                "data": image_base64
+            },
+            """
+            Hvad er dette objekt?
+            Er der tekst på objektet?
+            Returnér:
+            - kort navn
+            - tekst hvis nogen
+            """
+        ])
 
-    # 🔥 3. Rens data
-    clean_prices = [p for p in prices if 50 < p < 10000]
-    print("✅ Filtered:", clean_prices)
+        gemini_text = response.text.lower()
+        print("Gemini:", gemini_text)
 
-    # 📊 4. Median
-    if clean_prices:
-        clean_prices.sort()
-        mid = len(clean_prices) // 2
+    except Exception as e:
+        print("Gemini fejl:", e)
+        gemini_text = ""
 
-        if len(clean_prices) % 2 == 0:
-            price = int((clean_prices[mid - 1] + clean_prices[mid]) / 2)
-        else:
-            price = clean_prices[mid]
+    # ------------------------
+    # 2. GOOGLE LENS (IMAGE SEARCH)
+    # ------------------------
+
+    print("🔎 Google Lens search...")
+    prices = serpapi_google_lens(image_base64)
+    print("Lens prices:", prices)
+
+    # ------------------------
+    # 3. FALLBACK: tekst søgning
+    # ------------------------
+
+    if len(prices) < 3:
+        print("🔎 Text fallback...")
+
+        query = gemini_text.strip()
+
+        if len(query) < 5:
+            query = "brugt møbel"
+
+        more_prices = serpapi_text_search(query)
+        print("Text prices:", more_prices)
+
+        prices += more_prices
+
+    # ------------------------
+    # 4. FALLBACK: generisk kategori
+    # ------------------------
+
+    if len(prices) < 3:
+        print("🔎 Generic fallback...")
+
+        generic_prices = serpapi_text_search("trækasse brugt")
+        prices += generic_prices
+
+    # ------------------------
+    # 5. PRIS BEREGNING
+    # ------------------------
+
+    if prices:
+        price = int(statistics.median(prices))
     else:
-        price = 200  # fallback
+        price = 75  # fallback baseline
 
-    print("📊 Final price:", price)
+    # ------------------------
+    # 6. BESKRIVELSE
+    # ------------------------
+
+    description = gemini_text.split("\n")[0][:50]
+
+    if not description:
+        description = "genstand"
+
+    print("FINAL:", description, price)
 
     return {
         "description": description,
         "price": f"{price} kr"
     }
-
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
