@@ -40,7 +40,7 @@ def detect_object(image_bytes):
         prompt = "Hvad er dette objekt? Svar kort på dansk, fx: stol, sofa, bord"
 
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash-latest",
             contents=[
                 types.Content(
                     parts=[
