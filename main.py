@@ -70,40 +70,30 @@ def search_prices(query):
 
 
 # ----------------------------
-# 🔥 DESIGNER FILTER (kun hvis relevant)
+# 🔥 DESIGNER FILTER (INGEN fallback)
 # ----------------------------
 def filter_designer(prices, title):
     title_lower = title.lower()
 
     if any(k in title_lower for k in DESIGNER_KEYWORDS):
-        filtered = [p for p in prices if p >= 150]
-
-        # fallback hvis vi dræber alt
-        if len(filtered) > 3:
-            return filtered
+        return [p for p in prices if p >= 150]
 
     return prices
 
 
 # ----------------------------
-# 🧹 CLEAN (ikke for aggressiv)
+# 🧹 CLEAN (ingen fallback)
 # ----------------------------
 def clean_prices(prices):
     prices = [p for p in prices if 20 < p < 10000]
 
-    if len(prices) < 5:
+    if len(prices) < 3:
         return prices
 
     prices.sort()
 
-    trim = int(len(prices) * 0.1)  # mildere trim
-    trimmed = prices[trim: len(prices) - trim]
-
-    # fallback hvis trim ødelægger data
-    if len(trimmed) < 3:
-        return prices
-
-    return trimmed
+    trim = int(len(prices) * 0.1)
+    return prices[trim: len(prices) - trim]
 
 
 # ----------------------------
@@ -122,7 +112,7 @@ def calculate_price(prices):
 
 
 # ----------------------------
-# 🔁 RETRY
+# 🔁 RETRY (hurtig)
 # ----------------------------
 def get_prices_with_retry(query):
     for _ in range(2):
@@ -130,6 +120,7 @@ def get_prices_with_retry(query):
         if prices:
             return prices
         time.sleep(0.8)
+
     return []
 
 
@@ -146,8 +137,7 @@ async def analyze(file: UploadFile = File(...)):
     condition = result["condition"]
     extra = result["extra"]
 
-    # 🔥 BEDRE QUERY (vigtig!)
-    query = f"{title} {extra} pris brugt"
+    query = f"{title} {extra}"
 
     raw_prices = get_prices_with_retry(query)
     print("RAW:", raw_prices)
