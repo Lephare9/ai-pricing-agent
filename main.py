@@ -48,7 +48,7 @@ def root():
     return {"status": "ok"}
 
 # =========================
-# GEMINI
+# GEMINI (titel + ekstra + stand)
 # =========================
 def detect_object(image_bytes, mime):
     try:
@@ -56,29 +56,31 @@ def detect_object(image_bytes, mime):
 
         res = model.generate_content([
             {"mime_type": mime, "data": image_bytes},
-            "Beskriv objektet kort på dansk (1-3 ord) OG vurder stand. Format: 'objekt, stand'"
+            "Beskriv objektet kort på dansk (1-3 ord), inkl materiale og evt stil/designer hvis muligt. "
+            "Vurder også stand. Format: 'objekt, ekstra info, stand'"
         ])
 
         text = (res.text or "").strip().lower()
         logger.info(f"GEMINI RAW: {text}")
 
-        if "," in text:
-            title, condition = text.split(",", 1)
-            return title.strip(), condition.strip()
+        parts = [p.strip() for p in text.split(",")]
 
-        return text, "ukendt stand"
+        title = parts[0] if len(parts) > 0 else "genstand"
+        extra = parts[1] if len(parts) > 1 else ""
+        condition = parts[2] if len(parts) > 2 else "ukendt stand"
+
+        return title, extra, condition
 
     except Exception as e:
         logger.error(f"GEMINI ERROR: {e}")
-        return "genstand", "ukendt stand"
+        return "genstand", "", "ukendt stand"
 
 # =========================
-# SERPAPI DBA SEARCH
+# SERPAPI (DBA fokus)
 # =========================
 def get_prices(title):
     url = "https://serpapi.com/search"
 
-    # 🔥 FORCE DBA
     query = f'site:dba.dk "{title}" kr'
 
     params = {
@@ -91,7 +93,7 @@ def get_prices(title):
 
     for attempt in range(2):
         try:
-            logger.info(f"SERP DBA attempt {attempt+1}")
+            logger.info(f"SERP attempt {attempt+1}")
 
             r = requests.get(url, params=params, timeout=3)
 
@@ -105,6 +107,7 @@ def get_prices(title):
             for item in data.get("organic_results", []):
                 snippet = item.get("snippet", "").lower()
 
+                # 🔥 kun priser med "kr"
                 if "kr" not in snippet:
                     continue
 
@@ -120,7 +123,7 @@ def get_prices(title):
                 return prices
 
         except Exception as e:
-            logger.warning(f"SERP ERROR {attempt+1}: {e}")
+            logger.warning(f"SERP FAIL {attempt+1}: {e}")
 
     return []
 
@@ -162,7 +165,7 @@ async def analyze(file: UploadFile = File(...)):
     try:
         image = await file.read()
 
-        title, condition = detect_object(image, file.content_type)
+        title, extra, condition = detect_object(image, file.content_type)
 
         prices = get_prices(title)
 
@@ -170,6 +173,7 @@ async def analyze(file: UploadFile = File(...)):
 
         return {
             "title": title,
+            "extra": extra,
             "condition": condition,
             "price": final_price,
             "results": prices
@@ -179,6 +183,7 @@ async def analyze(file: UploadFile = File(...)):
         logger.error(f"CRASH: {e}")
         return {
             "title": "Fejl",
+            "extra": "",
             "condition": "",
             "price": 0,
             "results": []
