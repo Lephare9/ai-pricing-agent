@@ -5,16 +5,21 @@ import requests
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
+# =========================
+# SAFE IMPORT
+# =========================
 try:
     import google.generativeai as genai
 except:
-    raise RuntimeError("google-generativeai mangler")
+    raise RuntimeError("google-generativeai mangler i requirements.txt")
 
 # =========================
 # LOGGING
 # =========================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai-pricing-agent")
+
+logger.info("🔥 AI PRICING AGENT v4 START")
 
 # =========================
 # ENV
@@ -37,36 +42,50 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # sæt din Netlify URL senere
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# =========================
+# ROOT
+# =========================
 @app.get("/")
 def root():
     return {"status": "ok", "version": "v4"}
 
 # =========================
-# GEMINI (DANSK)
+# GEMINI (DANSK + STAND)
 # =========================
-def detect_object(image_bytes, mime):
-    model = genai.GenerativeModel("gemini-2.5-flash")
+def detect_object(image_bytes: bytes, mime_type: str):
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
-    res = model.generate_content([
-        {"mime_type": mime, "data": image_bytes},
-        "Hvad er objektet? Svar kun 1-3 danske ord."
-    ])
+        response = model.generate_content([
+            {
+                "mime_type": mime_type,
+                "data": image_bytes
+            },
+            "Beskriv objektet kort på dansk (1-3 ord) OG vurder stand (fx 'god stand', 'slidt'). Format: 'objekt, stand'"
+        ])
 
-    text = (res.text or "").strip().lower()
+        text = (response.text or "").strip().lower()
 
-    if not text or len(text) > 40:
-        return "genstand"
+        logger.info(f"🧠 GEMINI RAW: {text}")
 
-    return text
+        if "," in text:
+            title, condition = text.split(",", 1)
+            return title.strip(), condition.strip()
+
+        return text, "ukendt stand"
+
+    except Exception as e:
+        logger.error(f"🚨 GEMINI ERROR: {str(e)}")
+        return "genstand", "ukendt stand"
 
 # =========================
-# PRICE PARSER (FIX)
+# PRICE PARSER
 # =========================
 def parse_price(raw):
     if not raw:
@@ -97,8 +116,12 @@ def get_shopping_prices(query):
         }
 
         r = requests.get("https://serpapi.com/search", params=params, timeout=10)
-        data = r.json()
 
+        if r.status_code != 200:
+            logger.error(f"SERPAPI shopping HTTP {r.status_code}")
+            return []
+
+        data = r.json()
         prices = []
 
         for item in data.get("shopping_results", []):
@@ -109,7 +132,7 @@ def get_shopping_prices(query):
         return prices
 
     except Exception as e:
-        logger.error(f"shopping error: {e}")
+        logger.error(f"🚨 SHOPPING ERROR: {str(e)}")
         return []
 
 # =========================
@@ -126,8 +149,12 @@ def get_organic_prices(query):
         }
 
         r = requests.get("https://serpapi.com/search", params=params, timeout=10)
-        data = r.json()
 
+        if r.status_code != 200:
+            logger.error(f"SERPAPI organic HTTP {r.status_code}")
+            return []
+
+        data = r.json()
         prices = []
 
         for item in data.get("organic_results", []):
@@ -143,27 +170,26 @@ def get_organic_prices(query):
         return prices
 
     except Exception as e:
-        logger.error(f"organic error: {e}")
+        logger.error(f"🚨 ORGANIC ERROR: {str(e)}")
         return []
 
 # =========================
-# PRICE ENGINE (v4)
+# PRICE ENGINE (ROBUST)
 # =========================
 def calculate_price(prices):
     if not prices:
         return 0
 
-    # bredere filter (vigtigt!)
+    # filtrer åbenlyst skrald
     prices = [p for p in prices if 20 < p < 20000]
 
     if not prices:
         return 0
 
     prices.sort()
-
     n = len(prices)
 
-    # trim 20%
+    # trim top/bund 20%
     if n >= 10:
         cut = int(n * 0.2)
         prices = prices[cut:-cut]
@@ -173,6 +199,7 @@ def calculate_price(prices):
 
     # median
     mid = len(prices) // 2
+
     if len(prices) % 2 == 0:
         return (prices[mid - 1] + prices[mid]) // 2
     else:
@@ -183,35 +210,64 @@ def calculate_price(prices):
 # =========================
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
+    logger.info("=== /analyze ===")
+
     try:
-        image = await file.read()
+        image_bytes = await file.read()
 
-        title = detect_object(image, file.content_type)
-        logger.info(f"OBJECT: {title}")
+        if not image_bytes:
+            return {
+                "title": "Ingen fil",
+                "condition": "",
+                "price": 0,
+                "results": []
+            }
 
+        logger.info(f"📷 SIZE: {len(image_bytes)}")
+        logger.info(f"📷 MIME: {file.content_type}")
+
+        # =========================
+        # GEMINI
+        # =========================
+        title, condition = detect_object(image_bytes, file.content_type)
+
+        logger.info(f"🧠 TITLE: {title}")
+        logger.info(f"🧠 CONDITION: {condition}")
+
+        # =========================
+        # SERPAPI
+        # =========================
         query = f"{title} brugt pris danmark"
 
-        # 🔥 to kilder
         shopping = get_shopping_prices(query)
         organic = get_organic_prices(query)
 
         all_prices = shopping + organic
 
-        logger.info(f"SHOPPING: {shopping}")
-        logger.info(f"ORGANIC: {organic}")
+        logger.info(f"💰 SHOPPING: {shopping}")
+        logger.info(f"💰 ORGANIC: {organic}")
+        logger.info(f"💰 ALL: {all_prices}")
 
         final_price = calculate_price(all_prices)
 
+        logger.info(f"💰 FINAL PRICE: {final_price}")
+
+        # =========================
+        # RESPONSE
+        # =========================
         return {
             "title": title,
+            "condition": condition,
             "price": final_price,
             "results": all_prices
         }
 
     except Exception as e:
-        logger.error(f"CRASH: {e}")
+        logger.error(f"🔥 CRASH: {str(e)}")
+
         return {
-            "title": "Fejl",
+            "title": "Server fejl",
+            "condition": "",
             "price": 0,
             "results": []
         }
