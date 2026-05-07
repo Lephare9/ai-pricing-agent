@@ -73,65 +73,59 @@ def detect_object(image_bytes, mime):
         return "genstand", "ukendt stand"
 
 # =========================
-# PARSE PRICE
+# SERPAPI DBA SEARCH
 # =========================
-def parse_price(raw):
-    if not raw:
-        return None
+def get_prices(title):
+    url = "https://serpapi.com/search"
 
-    raw = raw.replace(",", ".")
-    matches = re.findall(r"\d+\.?\d*", raw)
+    # 🔥 FORCE DBA
+    query = f'site:dba.dk "{title}" kr'
 
-    if not matches:
-        return None
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "hl": "da",
+        "gl": "dk"
+    }
 
-    try:
-        return int(float(matches[0]))
-    except:
-        return None
+    for attempt in range(2):
+        try:
+            logger.info(f"SERP DBA attempt {attempt+1}")
 
-# =========================
-# SERPAPI
-# =========================
-def get_prices(query):
-    try:
-        params = {
-            "engine": "google",
-            "q": query,
-            "api_key": SERPAPI_KEY,
-            "hl": "da",
-            "gl": "dk"
-        }
+            r = requests.get(url, params=params, timeout=3)
 
-        r = requests.get("https://serpapi.com/search", params=params, timeout=10)
+            if r.status_code != 200:
+                continue
 
-        if r.status_code != 200:
-            logger.error(f"SERPAPI ERROR {r.status_code}")
-            return []
+            data = r.json()
 
-        data = r.json()
+            prices = []
 
-        prices = []
+            for item in data.get("organic_results", []):
+                snippet = item.get("snippet", "").lower()
 
-        # organic snippets
-        for item in data.get("organic_results", []):
-            snippet = item.get("snippet", "")
-            matches = re.findall(r"\d{2,5}", snippet)
+                if "kr" not in snippet:
+                    continue
 
-            for m in matches:
-                try:
-                    prices.append(int(m))
-                except:
-                    pass
+                matches = re.findall(r"\d{2,5}", snippet)
 
-        return prices
+                for m in matches:
+                    try:
+                        prices.append(int(m))
+                    except:
+                        pass
 
-    except Exception as e:
-        logger.error(f"SERP ERROR: {e}")
-        return []
+            if prices:
+                return prices
+
+        except Exception as e:
+            logger.warning(f"SERP ERROR {attempt+1}: {e}")
+
+    return []
 
 # =========================
-# PRICE ENGINE (FIXED)
+# PRICE ENGINE
 # =========================
 def calculate_price(prices):
     logger.info(f"RAW PRICES: {prices}")
@@ -139,28 +133,16 @@ def calculate_price(prices):
     if not prices:
         return 0
 
-    # 1. fjern skrald
-    prices = [p for p in prices if 20 < p < 1500]
+    # kun realistiske priser
+    prices = [p for p in prices if 45 < p < 5000]
 
-    logger.info(f"FILTER STEP 1: {prices}")
+    logger.info(f"FILTERED: {prices}")
 
     if not prices:
         return 0
 
     prices.sort()
 
-    # 2. trim top/bund 20%
-    n = len(prices)
-    if n >= 6:
-        cut = int(n * 0.2)
-        prices = prices[cut:-cut]
-
-    logger.info(f"FILTER STEP 2 (trimmed): {prices}")
-
-    if not prices:
-        return 0
-
-    # 3. median
     mid = len(prices) // 2
 
     if len(prices) % 2 == 0:
@@ -182,9 +164,7 @@ async def analyze(file: UploadFile = File(...)):
 
         title, condition = detect_object(image, file.content_type)
 
-        query = f"{title} brugt pris danmark"
-
-        prices = get_prices(query)
+        prices = get_prices(title)
 
         final_price = calculate_price(prices)
 
