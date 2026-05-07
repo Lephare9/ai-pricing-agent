@@ -1,38 +1,12 @@
 import os
-import logging
-import re
 import requests
-from fastapi import FastAPI, UploadFile, File
+import statistics
+import time
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
+import io
 
-try:
-    import google.generativeai as genai
-except:
-    raise RuntimeError("google-generativeai mangler")
-
-# =========================
-# LOGGING
-# =========================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ai-pricing-agent")
-
-# =========================
-# ENV
-# =========================
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY mangler")
-
-if not SERPAPI_KEY:
-    raise RuntimeError("SERPAPI_KEY mangler")
-
-genai.configure(api_key=GEMINI_API_KEY)
-
-# =========================
-# APP
-# =========================
 app = FastAPI()
 
 app.add_middleware(
@@ -43,148 +17,185 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-# =========================
-# GEMINI (titel + ekstra + stand)
-# =========================
-def detect_object(image_bytes, mime):
-    try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+# 🔥 Designer detection keywords
+DESIGNER_KEYWORDS = [
+    "kubus",
+    "mogens lassen",
+    "by lassen",
+    "kubus 4",
+    "kubus lysestage"
+]
 
-        res = model.generate_content([
-            {"mime_type": mime, "data": image_bytes},
-            "Beskriv objektet kort på dansk (1-3 ord), inkl materiale og evt stil/designer hvis muligt. "
-            "Vurder også stand. Format: 'objekt, ekstra info, stand'"
-        ])
 
-        text = (res.text or "").strip().lower()
-        logger.info(f"GEMINI RAW: {text}")
+# ----------------------------
+# 🧠 IMAGE → BESKRIVELSE (stub / din eksisterende)
+# ----------------------------
+def analyze_image(image_bytes):
+    """
+    Her bruger du din nuværende GPT / vision.
+    Returnér:
+    title, condition, extra
+    """
 
-        parts = [p.strip() for p in text.split(",")]
+    # 🔧 EKSEMPEL (erstat med din rigtige vision call)
+    return {
+        "title": "adventsstage",
+        "condition": "god stand",
+        "extra": "sort metal"
+    }
 
-        title = parts[0] if len(parts) > 0 else "genstand"
-        extra = parts[1] if len(parts) > 1 else ""
-        condition = parts[2] if len(parts) > 2 else "ukendt stand"
 
-        return title, extra, condition
-
-    except Exception as e:
-        logger.error(f"GEMINI ERROR: {e}")
-        return "genstand", "", "ukendt stand"
-
-# =========================
-# SERPAPI (DBA fokus)
-# =========================
-def get_prices(title):
-    url = "https://serpapi.com/search"
-
-    query = f'site:dba.dk "{title}" kr'
+# ----------------------------
+# 🔍 SERP SEARCH
+# ----------------------------
+def search_prices(query):
+    url = "https://serpapi.com/search.json"
 
     params = {
         "engine": "google",
         "q": query,
-        "api_key": SERPAPI_KEY,
-        "hl": "da",
-        "gl": "dk"
+        "api_key": SERP_API_KEY,
+        "hl": "da"
     }
 
-    for attempt in range(2):
-        try:
-            logger.info(f"SERP attempt {attempt+1}")
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        data = res.json()
+    except Exception:
+        return []
 
-            r = requests.get(url, params=params, timeout=3)
+    prices = []
 
-            if r.status_code != 200:
-                continue
+    for r in data.get("organic_results", []):
+        text = r.get("snippet", "") + " " + r.get("title", "")
 
-            data = r.json()
+        # find tal
+        for word in text.split():
+            try:
+                p = int(word.replace("kr", "").replace(".", "").replace(",", ""))
+                if 10 < p < 20000:
+                    prices.append(p)
+            except:
+                pass
 
-            prices = []
+    return prices
 
-            for item in data.get("organic_results", []):
-                snippet = item.get("snippet", "").lower()
 
-                # 🔥 kun priser med "kr"
-                if "kr" not in snippet:
-                    continue
+# ----------------------------
+# 🔥 DESIGNER FILTER
+# ----------------------------
+def filter_designer(prices, title):
+    title_lower = title.lower()
 
-                matches = re.findall(r"\d{2,5}", snippet)
+    if any(k in title_lower for k in DESIGNER_KEYWORDS):
+        # fjern kopier / små modeller
+        prices = [p for p in prices if p >= 150]
 
-                for m in matches:
-                    try:
-                        prices.append(int(m))
-                    except:
-                        pass
+    return prices
 
-            if prices:
-                return prices
 
-        except Exception as e:
-            logger.warning(f"SERP FAIL {attempt+1}: {e}")
+# ----------------------------
+# 🧹 GENEREL FILTER
+# ----------------------------
+def clean_prices(prices):
+    # fjern 0 og små junk
+    prices = [p for p in prices if p > 20]
 
-    return []
-
-# =========================
-# PRICE ENGINE
-# =========================
-def calculate_price(prices):
-    logger.info(f"RAW PRICES: {prices}")
-
-    if not prices:
-        return 0
-
-    # kun realistiske priser
-    prices = [p for p in prices if 45 < p < 5000]
-
-    logger.info(f"FILTERED: {prices}")
-
-    if not prices:
-        return 0
+    if len(prices) < 4:
+        return prices
 
     prices.sort()
 
-    mid = len(prices) // 2
+    # trim 15% i hver side
+    trim = int(len(prices) * 0.15)
+    prices = prices[trim: len(prices) - trim]
 
-    if len(prices) % 2 == 0:
-        result = (prices[mid - 1] + prices[mid]) // 2
-    else:
-        result = prices[mid]
+    return prices
 
-    logger.info(f"FINAL PRICE: {result}")
 
-    return result
+# ----------------------------
+# 📊 BEREGN PRIS RANGE
+# ----------------------------
+def calculate_price(prices):
+    if not prices:
+        return None, None
 
-# =========================
-# ANALYZE
-# =========================
+    median = statistics.median(prices)
+
+    low = median * 0.9
+    high = median * 1.1
+
+    # rund til nærmeste 5 kr
+    low = int(round(low / 5) * 5)
+    high = int(round(high / 5) * 5)
+
+    return low, high
+
+
+# ----------------------------
+# 🔁 SERP MED RETRY
+# ----------------------------
+def get_prices_with_retry(query):
+    for attempt in range(2):
+        prices = search_prices(query)
+        if prices:
+            return prices
+        time.sleep(0.8)
+
+    return []
+
+
+# ----------------------------
+# 🚀 MAIN ENDPOINT
+# ----------------------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    try:
-        image = await file.read()
 
-        title, extra, condition = detect_object(image, file.content_type)
+    image_bytes = await file.read()
 
-        prices = get_prices(title)
+    # 🧠 image analyse
+    result = analyze_image(image_bytes)
 
-        final_price = calculate_price(prices)
+    title = result["title"]
+    condition = result["condition"]
+    extra = result["extra"]
 
+    query = f"{title} {extra}"
+
+    # 🔍 hent priser
+    raw_prices = get_prices_with_retry(query)
+
+    print("RAW PRICES:", raw_prices)
+
+    # 🔥 designer filter
+    prices = filter_designer(raw_prices, title)
+
+    print("AFTER DESIGNER FILTER:", prices)
+
+    # 🧹 clean + trim
+    prices = clean_prices(prices)
+
+    print("AFTER CLEAN:", prices)
+
+    if not prices:
         return {
             "title": title,
-            "extra": extra,
             "condition": condition,
-            "price": final_price,
-            "results": prices
+            "extra": extra,
+            "price_low": None,
+            "price_high": None,
+            "count": 0
         }
 
-    except Exception as e:
-        logger.error(f"CRASH: {e}")
-        return {
-            "title": "Fejl",
-            "extra": "",
-            "condition": "",
-            "price": 0,
-            "results": []
-        }
+    low, high = calculate_price(prices)
+
+    return {
+        "title": title,
+        "condition": condition,
+        "extra": extra,
+        "price_low": low,
+        "price_high": high,
+        "count": len(prices)
+    }
