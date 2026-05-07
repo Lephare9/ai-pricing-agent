@@ -37,10 +37,10 @@ def analyze_image(image_bytes):
 
 
 # ----------------------------
-# 🔍 PRICE EXTRACTION (robust)
+# 🔍 PRICE EXTRACTION
 # ----------------------------
 def extract_prices(text):
-    matches = re.findall(r"\d{2,5}", text)
+    matches = re.findall(r"\d+", text)
     return [int(m) for m in matches]
 
 
@@ -70,29 +70,40 @@ def search_prices(query):
 
 
 # ----------------------------
-# 🔥 DESIGNER FILTER
+# 🔥 DESIGNER FILTER (kun hvis relevant)
 # ----------------------------
 def filter_designer(prices, title):
     title_lower = title.lower()
 
     if any(k in title_lower for k in DESIGNER_KEYWORDS):
-        prices = [p for p in prices if p >= 150]
+        filtered = [p for p in prices if p >= 150]
+
+        # fallback hvis vi dræber alt
+        if len(filtered) > 3:
+            return filtered
 
     return prices
 
 
 # ----------------------------
-# 🧹 CLEAN
+# 🧹 CLEAN (ikke for aggressiv)
 # ----------------------------
 def clean_prices(prices):
-    prices = [p for p in prices if p > 20]
+    prices = [p for p in prices if 20 < p < 10000]
 
-    if len(prices) < 4:
+    if len(prices) < 5:
         return prices
 
     prices.sort()
-    trim = int(len(prices) * 0.15)
-    return prices[trim: len(prices) - trim]
+
+    trim = int(len(prices) * 0.1)  # mildere trim
+    trimmed = prices[trim: len(prices) - trim]
+
+    # fallback hvis trim ødelægger data
+    if len(trimmed) < 3:
+        return prices
+
+    return trimmed
 
 
 # ----------------------------
@@ -135,15 +146,26 @@ async def analyze(file: UploadFile = File(...)):
     condition = result["condition"]
     extra = result["extra"]
 
-    query = f"{title} {extra}"
+    # 🔥 BEDRE QUERY (vigtig!)
+    query = f"{title} {extra} pris brugt"
 
     raw_prices = get_prices_with_retry(query)
     print("RAW:", raw_prices)
 
+    if not raw_prices:
+        return {
+            "title": title,
+            "condition": condition,
+            "extra": extra,
+            "price_low": None,
+            "price_high": None,
+            "count": 0
+        }
+
     prices = filter_designer(raw_prices, title)
     prices = clean_prices(prices)
 
-    print("FILTERED:", prices)
+    print("FINAL:", prices)
 
     if not prices:
         return {
