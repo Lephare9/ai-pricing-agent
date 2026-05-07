@@ -5,14 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 
 # =========================
-# SAFE IMPORT (undgår silent crash)
+# SAFE IMPORT
 # =========================
 try:
     import google.generativeai as genai
-except Exception as e:
-    raise RuntimeError(
-        "google-generativeai mangler. Tilføj til requirements.txt"
-    )
+except Exception:
+    raise RuntimeError("google-generativeai mangler i requirements.txt")
 
 # =========================
 # LOGGING
@@ -20,7 +18,7 @@ except Exception as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai-pricing-agent")
 
-logger.info("🔥 AI PRICING AGENT v2 START")
+logger.info("🔥 AI PRICING AGENT v3 START")
 
 # =========================
 # ENV
@@ -43,7 +41,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # senere: din Netlify URL
+    allow_origins=["*"],  # sæt din Netlify URL senere
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,30 +52,34 @@ app.add_middleware(
 # =========================
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "v2"}
+    return {"status": "ok", "version": "v3"}
 
 # =========================
-# GEMINI
+# GEMINI (DANSK)
 # =========================
 def detect_object(image_bytes: bytes, mime_type: str) -> str:
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
-    response = model.generate_content([
-        {
-            "mime_type": mime_type,
-            "data": image_bytes
-        },
-        "Identify the object in this image. Return ONLY 1-3 words."
-    ])
+        response = model.generate_content([
+            {
+                "mime_type": mime_type,
+                "data": image_bytes
+            },
+            "Hvad er objektet på billedet? Svar KUN med 1-3 danske ord. Fx: 'kontorstol', 'iphone 12', 'træbord'"
+        ])
 
-    text = (response.text or "").strip().lower()
+        text = (response.text or "").strip().lower()
 
-    if not text or len(text) > 40:
-        logger.warning(f"⚠️ Bad Gemini output: {text}")
-        return "genstand"
+        if not text or len(text) > 40:
+            logger.warning(f"⚠️ Bad Gemini output: {text}")
+            return "genstand"
 
-    return text
+        return text
 
+    except Exception as e:
+        logger.error(f"🚨 GEMINI ERROR: {str(e)}")
+        raise
 
 # =========================
 # SERPAPI
@@ -87,7 +89,9 @@ def fetch_prices(query: str):
         params = {
             "engine": "google_shopping",
             "q": query,
-            "api_key": SERPAPI_KEY
+            "api_key": SERPAPI_KEY,
+            "hl": "da",  # dansk
+            "gl": "dk"   # Danmark
         }
 
         r = requests.get(
@@ -119,6 +123,39 @@ def fetch_prices(query: str):
         logger.error(f"🚨 SERPAPI ERROR: {str(e)}")
         return []
 
+# =========================
+# PRIS LOGIK (TRIM + MEDIAN)
+# =========================
+def calculate_price(prices):
+    if not prices:
+        return 0
+
+    # fjern åbenlyst skøre priser
+    prices = [p for p in prices if 50 < p < 5000]
+
+    if not prices:
+        return 0
+
+    prices = sorted(prices)
+
+    n = len(prices)
+
+    # trim 20% i hver ende hvis nok data
+    if n >= 10:
+        cut = int(n * 0.2)
+        prices = prices[cut:-cut]
+
+    # fallback hvis vi trimmede alt væk
+    if not prices:
+        return 0
+
+    # median
+    mid = len(prices) // 2
+
+    if len(prices) % 2 == 0:
+        return (prices[mid - 1] + prices[mid]) // 2
+    else:
+        return prices[mid]
 
 # =========================
 # ANALYZE
@@ -140,28 +177,37 @@ async def analyze(file: UploadFile = File(...)):
         logger.info(f"📷 SIZE: {len(image_bytes)}")
         logger.info(f"📷 MIME: {file.content_type}")
 
+        # =========================
         # GEMINI
+        # =========================
         try:
             title = detect_object(image_bytes, file.content_type)
             logger.info(f"🧠 OBJECT: {title}")
-        except Exception as e:
-            logger.error(f"GEMINI FAIL: {e}")
+        except Exception:
             return {
                 "title": "Kunne ikke analysere",
                 "price": 0,
                 "results": []
             }
 
+        # =========================
         # SERPAPI
-        prices = fetch_prices(f"{title} used price")
+        # =========================
+        search_query = f"{title} brugt pris danmark"
+        prices = fetch_prices(search_query)
 
-        logger.info(f"💰 PRICES: {prices}")
+        logger.info(f"💰 RAW PRICES: {prices}")
 
-        avg_price = int(sum(prices) / len(prices)) if prices else 0
+        final_price = calculate_price(prices)
 
+        logger.info(f"💰 FINAL PRICE: {final_price}")
+
+        # =========================
+        # RESPONSE
+        # =========================
         return {
             "title": title,
-            "price": avg_price,
+            "price": final_price,
             "results": prices
         }
 
