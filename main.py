@@ -1,13 +1,24 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+
 from PIL import Image
+
+from serpapi import GoogleSearch
+from google.cloud import vision
+from google.oauth2 import service_account
+
 import io
 import os
 import re
+import json
+import base64
 import statistics
 import requests
-from serpapi import GoogleSearch
-from google.cloud import vision
+
+
+# ==========================================
+# FASTAPI
+# ==========================================
 
 app = FastAPI()
 
@@ -19,46 +30,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ==========================================
+# ENV
+# ==========================================
+
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+IMGBB_KEY = os.getenv("IMGBB_KEY")
+GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
 
-# =========================
-# GOOGLE VISION
-# =========================
+# ==========================================
+# GOOGLE VISION AUTH
+# ==========================================
 
-vision_client = vision.ImageAnnotatorClient()
+vision_client = None
+
+try:
+
+    if GOOGLE_CREDS_JSON:
+
+        creds_dict = json.loads(GOOGLE_CREDS_JSON)
+
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_dict
+        )
+
+        vision_client = vision.ImageAnnotatorClient(
+            credentials=credentials
+        )
+
+        print("GOOGLE VISION READY")
+
+except Exception as e:
+
+    print("VISION INIT ERROR:", str(e))
 
 
-# =========================
-# HJÆLPERE
-# =========================
+# ==========================================
+# STOPWORDS
+# ==========================================
 
-DANISH_STOPWORDS = [
+STOPWORDS = [
     "amazon",
     "ebay",
     "etsy",
     "chair",
     "table",
-    "furniture",
     "wood",
-    "cabinet",
-    "black",
-    "metal",
     "plastic",
     "display",
     "screen",
     "device",
     "monitor",
-    "sofa",
-    "lamp",
+    "furniture",
+    "metal",
+    "black",
+    "white",
+    "grey",
+    "gray",
+    "brown",
+    "interior",
+    "design",
 ]
 
 
+# ==========================================
+# CLEAN TEXT
+# ==========================================
+
 def clean_text(text):
+
     text = text.lower()
 
-    for bad in DANISH_STOPWORDS:
-        text = text.replace(bad, "")
+    for word in STOPWORDS:
+        text = text.replace(word, "")
 
     text = re.sub(r"[^a-zæøå0-9 ]", " ", text)
     text = re.sub(r"\s+", " ", text)
@@ -66,13 +112,23 @@ def clean_text(text):
     return text.strip()
 
 
+# ==========================================
+# EXTRACT PRICES
+# ==========================================
+
 def extract_prices(text):
+
     prices = []
 
-    matches = re.findall(r'(\d{2,5})\s?(kr|dkk)?', text.lower())
+    matches = re.findall(
+        r'(\d{2,5})\s?(kr|dkk)?',
+        text.lower()
+    )
 
     for match in matches:
+
         try:
+
             price = int(match[0])
 
             if 40 <= price <= 50000:
@@ -84,22 +140,33 @@ def extract_prices(text):
     return prices
 
 
+# ==========================================
+# FILTER PRICES
+# ==========================================
+
 def filter_prices(prices):
+
     if not prices:
         return []
 
-    filtered = []
-
     median = statistics.median(prices)
 
+    filtered = []
+
     for p in prices:
+
         if median * 0.35 <= p <= median * 2.5:
             filtered.append(p)
 
     return filtered
 
 
+# ==========================================
+# PRICE RANGE
+# ==========================================
+
 def build_price_range(prices):
+
     if not prices:
         return "Ukendt pris"
 
@@ -111,36 +178,58 @@ def build_price_range(prices):
     low = int(statistics.quantiles(prices, n=4)[0])
     high = int(statistics.quantiles(prices, n=4)[2])
 
-    if low < 50:
-        low = min(prices)
-
     if high < low:
         high = max(prices)
 
     return f"{low} – {high} kr"
 
 
-# =========================
+# ==========================================
 # GOOGLE VISION ANALYSE
-# =========================
+# ==========================================
 
-def analyze_image(image_bytes):
+def analyze_with_vision(image_bytes):
+
+    if not vision_client:
+        return {
+            "title": "Ukendt møbel",
+            "labels": [],
+            "entities": [],
+        }
 
     image = vision.Image(content=image_bytes)
 
-    web_detection = vision_client.web_detection(image=image).web_detection
+    # ---------------------------
+    # LABELS
+    # ---------------------------
 
     labels_response = vision_client.label_detection(image=image)
-    labels = [l.description.lower() for l in labels_response.label_annotations]
+
+    labels = []
+
+    for label in labels_response.label_annotations:
+
+        txt = clean_text(label.description)
+
+        if txt and txt not in labels:
+            labels.append(txt)
 
     print("LABELS:", labels)
 
+    # ---------------------------
+    # WEB DETECTION
+    # ---------------------------
+
+    web_response = vision_client.web_detection(image=image)
+
     web_entities = []
 
-    if web_detection.web_entities:
-        for entity in web_detection.web_entities:
+    if web_response.web_detection.web_entities:
+
+        for entity in web_response.web_detection.web_entities:
 
             if entity.description:
+
                 txt = clean_text(entity.description)
 
                 if len(txt) > 2:
@@ -148,26 +237,60 @@ def analyze_image(image_bytes):
 
     print("WEB ENTITIES:", web_entities)
 
-    best_title = "Ukendt møbel"
+    # ---------------------------
+    # TITLE
+    # ---------------------------
+
+    title = "Ukendt møbel"
 
     if web_entities:
-        best_title = web_entities[0]
+        title = web_entities[0]
 
     elif labels:
-        best_title = " ".join(labels[:3])
-
-    best_title = clean_text(best_title)
+        title = " ".join(labels[:3])
 
     return {
-        "title": best_title,
+        "title": title,
         "labels": labels,
         "entities": web_entities,
     }
 
 
-# =========================
-# SERPAPI GOOGLE LENS
-# =========================
+# ==========================================
+# UPLOAD IMAGE
+# ==========================================
+
+def upload_to_imgbb(image_bytes):
+
+    if not IMGBB_KEY:
+        return None
+
+    try:
+
+        encoded = base64.b64encode(image_bytes)
+
+        response = requests.post(
+            f"https://api.imgbb.com/1/upload?key={IMGBB_KEY}",
+            files={
+                "image": encoded
+            },
+            timeout=30
+        )
+
+        data = response.json()
+
+        return data["data"]["url"]
+
+    except Exception as e:
+
+        print("IMGBB ERROR:", str(e))
+
+        return None
+
+
+# ==========================================
+# GOOGLE LENS
+# ==========================================
 
 def google_lens_search(image_url):
 
@@ -180,14 +303,13 @@ def google_lens_search(image_url):
     }
 
     search = GoogleSearch(params)
-    results = search.get_dict()
 
-    return results
+    return search.get_dict()
 
 
-# =========================
-# HENT PRISER FRA LENS
-# =========================
+# ==========================================
+# COLLECT PRICES
+# ==========================================
 
 def collect_prices(results):
 
@@ -197,11 +319,11 @@ def collect_prices(results):
     related_content = results.get("related_content", [])
     shopping_results = results.get("shopping_results", [])
 
-    # ===================================
+    # ---------------------------------
     # VISUAL MATCHES
-    # ===================================
+    # ---------------------------------
 
-    for item in visual_matches[:15]:
+    for item in visual_matches[:20]:
 
         text = ""
 
@@ -218,11 +340,11 @@ def collect_prices(results):
 
         prices.extend(found)
 
-    # ===================================
+    # ---------------------------------
     # RELATED CONTENT
-    # ===================================
+    # ---------------------------------
 
-    for item in related_content[:15]:
+    for item in related_content[:20]:
 
         text = ""
 
@@ -236,11 +358,11 @@ def collect_prices(results):
 
         prices.extend(found)
 
-    # ===================================
+    # ---------------------------------
     # SHOPPING RESULTS
-    # ===================================
+    # ---------------------------------
 
-    for item in shopping_results[:15]:
+    for item in shopping_results[:20]:
 
         text = ""
 
@@ -256,12 +378,16 @@ def collect_prices(results):
 
     print("RAW PRICES:", prices)
 
-    return filter_prices(prices)
+    filtered = filter_prices(prices)
+
+    print("FILTERED:", filtered)
+
+    return filtered
 
 
-# =========================
+# ==========================================
 # ANALYZE
-# =========================
+# ==========================================
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
@@ -270,78 +396,67 @@ async def analyze(file: UploadFile = File(...)):
 
         contents = await file.read()
 
+        # ---------------------------
+        # RESIZE IMAGE
+        # ---------------------------
+
         img = Image.open(io.BytesIO(contents))
+
         img.thumbnail((1200, 1200))
 
         buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85)
+
+        img.save(
+            buffer,
+            format="JPEG",
+            quality=85
+        )
 
         image_bytes = buffer.getvalue()
 
-        # ===================================
-        # VISION
-        # ===================================
+        # ---------------------------
+        # GOOGLE VISION
+        # ---------------------------
 
-        vision_data = analyze_image(image_bytes)
+        vision_data = analyze_with_vision(image_bytes)
 
-        # ===================================
-        # IMGUR GRATIS HOST
-        # ===================================
+        # ---------------------------
+        # UPLOAD IMAGE
+        # ---------------------------
 
-        imgbb_key = os.getenv("IMGBB_KEY")
+        image_url = upload_to_imgbb(image_bytes)
 
-        image_url = ""
+        if not image_url:
 
-        if imgbb_key:
+            return {
+                "title": "Fejl",
+                "material": "Ukendt",
+                "condition": "Ukendt",
+                "price": "Kunne ikke hente pris",
+                "found_prices": 0,
+            }
 
-            import base64
+        print("IMAGE URL:", image_url)
 
-            encoded = base64.b64encode(image_bytes)
-
-            upload = requests.post(
-                f"https://api.imgbb.com/1/upload?key={imgbb_key}",
-                files={
-                    "image": encoded
-                },
-                timeout=20
-            )
-
-            upload_json = upload.json()
-
-            image_url = upload_json["data"]["url"]
-
-        # ===================================
+        # ---------------------------
         # GOOGLE LENS
-        # ===================================
+        # ---------------------------
 
-        prices = []
+        lens_results = google_lens_search(image_url)
 
-        if image_url:
+        prices = collect_prices(lens_results)
 
-            lens_results = google_lens_search(image_url)
-
-            prices = collect_prices(lens_results)
-
-        print("FILTERED:", prices)
-
-        # ===================================
-        # RESULTAT
-        # ===================================
+        # ---------------------------
+        # RESULT
+        # ---------------------------
 
         if prices:
 
-            price_range = build_price_range(prices)
-
-            final_title = vision_data["title"]
-
-            if final_title == "":
-                final_title = "Møbel"
-
             return {
-                "title": final_title.title(),
+                "title": vision_data["title"].title(),
                 "material": "Brugt møbel",
                 "condition": "Brugt med almindelige brugsspor",
-                "price": price_range,
+                "price": build_price_range(prices),
                 "found_prices": len(prices),
             }
 
@@ -358,9 +473,9 @@ async def analyze(file: UploadFile = File(...)):
         print("ANALYZE ERROR:", str(e))
 
         return {
-            "title": "Ukendt",
+            "title": "Fejl",
             "material": "Ukendt",
             "condition": "Ukendt",
-            "price": "Ukendt pris",
+            "price": "Kunne ikke hente pris",
             "found_prices": 0,
         }
