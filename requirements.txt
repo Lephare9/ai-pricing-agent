@@ -4,3 +4,4 @@ python-multipart
 pillow
 requests
 google-cloud-vision
+google-search-results
