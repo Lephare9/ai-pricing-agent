@@ -10,6 +10,8 @@ import statistics
 import traceback
 import requests
 
+from concurrent.futures import ThreadPoolExecutor
+
 from PIL import Image
 import google.generativeai as genai
 
@@ -45,8 +47,13 @@ app.add_middleware(
 )
 
 # =========================================================
-# HELPERS
+# FAST MODE CONFIG
 # =========================================================
+
+SEARCH_SITES = [
+    "dba.dk",
+    "facebook.com",
+]
 
 STOPWORDS = {
     "flot",
@@ -68,15 +75,12 @@ STOPWORDS = {
     "stor",
 }
 
+# simpel RAM cache
+SEARCH_CACHE = {}
 
-SEARCH_SITES = [
-    "dba.dk",
-    "facebook.com",
-    "etsy.com",
-    "ebay.com",
-    "trendsales.dk",
-]
-
+# =========================================================
+# HELPERS
+# =========================================================
 
 def title_case(text: str):
     if not text:
@@ -95,11 +99,17 @@ def clean_title(title: str):
 
 
 def clean_material(material: str):
-    return title_case(material.strip()) if material else ""
+    if not material:
+        return ""
+
+    return title_case(material.strip())
 
 
 def clean_condition(condition: str):
-    return title_case(condition.strip()) if condition else ""
+    if not condition:
+        return ""
+
+    return title_case(condition.strip())
 
 
 def simplify_query(text: str):
@@ -116,7 +126,7 @@ def simplify_query(text: str):
 
         cleaned.append(w)
 
-    return " ".join(cleaned[:6])
+    return " ".join(cleaned[:5])
 
 
 def extract_prices(text: str):
@@ -146,7 +156,7 @@ def remove_outliers(prices):
     filtered = []
 
     for p in prices:
-        if median * 0.5 <= p <= median * 1.8:
+        if median * 0.6 <= p <= median * 1.5:
             filtered.append(p)
 
     return filtered
@@ -176,7 +186,16 @@ def calculate_price_range(prices):
     return f"{low} – {high} kr"
 
 
+# =========================================================
+# SEARCH
+# =========================================================
+
 def serpapi_search(query: str):
+    cache_key = query.lower()
+
+    if cache_key in SEARCH_CACHE:
+        return SEARCH_CACHE[cache_key]
+
     url = "https://serpapi.com/search.json"
 
     params = {
@@ -185,44 +204,70 @@ def serpapi_search(query: str):
         "api_key": SERPAPI_KEY,
         "hl": "da",
         "gl": "dk",
-        "num": 10,
+        "num": 6,
     }
 
     response = requests.get(
         url,
         params=params,
-        timeout=20,
+        timeout=10,
     )
 
     data = response.json()
 
-    return data.get("organic_results", [])
+    results = data.get("organic_results", [])
+
+    SEARCH_CACHE[cache_key] = results
+
+    return results
 
 
-def gather_prices(query: str):
+def search_site(query, site):
+    try:
+        full_query = f"{query} site:{site}"
+
+        results = serpapi_search(full_query)
+
+        prices = []
+
+        for result in results:
+            text = ""
+
+            if "title" in result:
+                text += " " + result["title"]
+
+            if "snippet" in result:
+                text += " " + result["snippet"]
+
+            found = extract_prices(text)
+
+            prices.extend(found)
+
+        return prices
+
+    except Exception as e:
+        print("SEARCH ERROR:", e)
+        return []
+
+
+def gather_prices_parallel(query):
     all_prices = []
 
-    for site in SEARCH_SITES:
-        try:
-            full_query = f"{query} site:{site}"
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = []
 
-            results = serpapi_search(full_query)
+        for site in SEARCH_SITES:
+            futures.append(
+                executor.submit(search_site, query, site)
+            )
 
-            for result in results:
-                text = ""
-
-                if "title" in result:
-                    text += " " + result["title"]
-
-                if "snippet" in result:
-                    text += " " + result["snippet"]
-
-                prices = extract_prices(text)
-
+        for future in futures:
+            try:
+                prices = future.result()
                 all_prices.extend(prices)
 
-        except Exception as e:
-            print("SEARCH ERROR:", e)
+            except:
+                pass
 
     return all_prices
 
@@ -253,13 +298,14 @@ Format:
   "search_terms": []
 }
 
-Regler:
-- title skal være realistisk
-- ingen fantasinavne
+REGLER:
+- realistisk titel
+- ingen fantasi
 - ingen pris
-- material kort
-- condition realistisk
+- kort materiale
+- realistisk stand
 - designer kun hvis meget sikker
+- søgetermer korte og konkrete
 """
 
         response = vision_model.generate_content(
@@ -273,8 +319,6 @@ Regler:
 
         raw = raw.replace("```json", "")
         raw = raw.replace("```", "")
-
-        print("RAW GEMINI:", raw)
 
         vision = json.loads(raw)
 
@@ -290,29 +334,65 @@ Regler:
             vision.get("condition", "")
         )
 
+        designer = vision.get("designer", "").strip()
+
         search_terms = vision.get("search_terms", [])
+
+        # =====================================================
+        # FAST MODE QUERIES
+        # =====================================================
 
         queries = []
 
-        queries.append(
-            simplify_query(
-                f"{title} {material}"
-            )
+        main_query = simplify_query(
+            f"{title} {material}"
         )
 
-        for s in search_terms:
-            queries.append(
-                simplify_query(s)
+        queries.append(main_query)
+
+        if designer:
+            designer_query = simplify_query(
+                f"{designer} {title}"
             )
 
-        queries = list(dict.fromkeys(queries))
+            if designer_query not in queries:
+                queries.append(designer_query)
+
+        for s in search_terms[:1]:
+            q = simplify_query(s)
+
+            if q not in queries:
+                queries.append(q)
+
+        # max 2 queries
+        queries = queries[:2]
+
+        print("QUERIES:", queries)
+
+        # =====================================================
+        # SEARCH
+        # =====================================================
 
         all_prices = []
 
-        for q in queries[:5]:
-            prices = gather_prices(q)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = []
 
-            all_prices.extend(prices)
+            for q in queries:
+                futures.append(
+                    executor.submit(
+                        gather_prices_parallel,
+                        q
+                    )
+                )
+
+            for future in futures:
+                try:
+                    prices = future.result()
+                    all_prices.extend(prices)
+
+                except:
+                    pass
 
         filtered_prices = remove_outliers(all_prices)
 
@@ -321,10 +401,10 @@ Regler:
         if not price_text:
             price_text = "Ukendt pris"
 
-        print("VISION:", vision)
-        print("QUERIES:", queries)
-        print("RAW:", all_prices)
+        print("TITLE:", title)
+        print("RAW PRICES:", all_prices)
         print("FILTERED:", filtered_prices)
+        print("FINAL:", price_text)
 
         return JSONResponse({
             "title": title,
