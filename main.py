@@ -7,6 +7,7 @@ import io
 import re
 import json
 import statistics
+import traceback
 import requests
 
 from PIL import Image
@@ -64,7 +65,6 @@ STOPWORDS = {
     "lille",
     "stor",
 }
-
 
 SEARCH_SITES = [
     "dba.dk",
@@ -279,10 +279,17 @@ Regler:
             ]
         )
 
-        raw = response.text.strip()
+        raw = response.text
+
+        if not raw:
+            raise Exception("Empty Gemini response")
+
+        raw = raw.strip()
 
         raw = raw.replace("```json", "")
         raw = raw.replace("```", "")
+
+        print("RAW GEMINI:", raw)
 
         vision = json.loads(raw)
 
@@ -343,7 +350,8 @@ Regler:
         })
 
     except Exception as e:
-        print("ANALYZE ERROR:", str(e))
+        print("ANALYZE ERROR:")
+        traceback.print_exc()
 
         return JSONResponse(
             status_code=500,
