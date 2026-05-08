@@ -1,7 +1,5 @@
 fastapi
 uvicorn
 python-multipart
-pillow
-requests
-google-cloud-vision
-google-search-results
+google-generativeai
+httpx

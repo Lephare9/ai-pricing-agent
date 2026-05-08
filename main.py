@@ -1,14 +1,40 @@
+# main.py
+
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-from google.cloud import vision
+import google.generativeai as genai
 
-import requests
-import statistics
-import tempfile
+import asyncio
+import base64
+import httpx
 import json
 import os
 import re
+import statistics
+
+
+# =====================================================
+# CONFIG
+# =====================================================
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+
+if not GEMINI_API_KEY:
+    raise Exception("Missing GEMINI_API_KEY")
+
+if not SERPAPI_KEY:
+    raise Exception("Missing SERPAPI_KEY")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+
+# =====================================================
+# FASTAPI
+# =====================================================
 
 app = FastAPI()
 
@@ -20,106 +46,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
-# ---------------------------------------------------
-# GOOGLE VISION INIT
-# ---------------------------------------------------
-
-vision_client = None
-
-try:
-
-    if GOOGLE_CREDS_JSON:
-
-        creds_dict = json.loads(GOOGLE_CREDS_JSON)
-
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".json",
-            delete=False
-        ) as f:
-
-            json.dump(creds_dict, f)
-
-            creds_path = f.name
-
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
-
-        vision_client = vision.ImageAnnotatorClient()
-
-        print("GOOGLE VISION READY")
-
-    else:
-
-        print("GOOGLE_CREDS_JSON missing")
-
-except Exception as e:
-
-    print("VISION INIT ERROR:", str(e))
-
-
-# ---------------------------------------------------
+# =====================================================
 # HELPERS
-# ---------------------------------------------------
-
-def clean_text(text):
-
-    if not text:
-        return ""
-
-    text = text.lower()
-
-    blacklist = [
-        "chair",
-        "table",
-        "furniture",
-        "wood",
-        "hardwood",
-        "interior",
-        "design",
-        "room",
-        "floor",
-        "armrest",
-        "stain",
-        "yellow",
-        "brown",
-        "black",
-        "grey",
-        "white",
-        "display",
-        "device",
-        "electronics",
-        "metal",
-        "plastic",
-        "product",
-        "font",
-        "material",
-        "property",
-        "rectangle",
-        "parallel",
-        "composite material",
-        "wood stain",
-        "leather",
-        "hard",
-    ]
-
-    for word in blacklist:
-        text = text.replace(word, "")
-
-    text = re.sub(r"[^a-zA-ZæøåÆØÅ0-9 ]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
-
+# =====================================================
 
 def extract_prices(text):
 
     prices = []
 
     matches = re.findall(
-        r'(\d{2,5})\s?(?:kr|,-)',
+        r'(\d{2,5})\s?(?:kr|,-|dkk)',
         text.lower()
     )
 
@@ -129,7 +66,7 @@ def extract_prices(text):
 
             price = int(match)
 
-            if 100 <= price <= 50000:
+            if 50 <= price <= 50000:
                 prices.append(price)
 
         except:
@@ -138,102 +75,153 @@ def extract_prices(text):
     return prices
 
 
-# ---------------------------------------------------
-# GOOGLE VISION SEARCH
-# ---------------------------------------------------
+def clean_prices(prices):
 
-def google_vision_search(image_bytes):
+    if len(prices) < 3:
+        return prices
 
-    if not vision_client:
-        return [], []
+    median = statistics.median(prices)
 
-    image = vision.Image(content=image_bytes)
+    filtered = []
 
-    response = vision_client.web_detection(image=image)
+    for p in prices:
 
-    web = response.web_detection
+        if median * 0.4 <= p <= median * 2.5:
+            filtered.append(p)
 
-    queries = []
-    urls = []
+    return filtered
+
+
+def build_price_range(prices):
+
+    if not prices:
+        return "Ukendt pris"
+
+    median = int(statistics.median(prices))
+
+    low = int(round((median * 0.9) / 50) * 50)
+    high = int(round((median * 1.1) / 50) * 50)
+
+    return f"{low} - {high} kr"
+
+
+# =====================================================
+# GEMINI VISION
+# =====================================================
+
+async def analyze_image_with_gemini(image_bytes):
+
+    prompt = """
+    Du analyserer brugte møbler og boligobjekter i Danmark.
+
+    Returner KUN valid JSON.
+
+    Svarformat:
+
+    {
+      "title": "...",
+      "category": "...",
+      "material": "...",
+      "description": "...",
+      "searches": [
+        "...",
+        "...",
+        "...",
+        "...",
+        "..."
+      ]
+    }
+
+    Regler:
+    - Alt skal være på dansk
+    - Ingen engelske ord
+    - Beskriv objektet præcist
+    - Gæt designer/stil hvis muligt
+    - Lav gode danske søgestrenge til brugtmarked
+    - Fokusér på DBA/Facebook Marketplace søgninger
+    - Ingen markdown
+    - Ingen forklaring
+    """
+
+    image_part = {
+        "mime_type": "image/jpeg",
+        "data": image_bytes
+    }
+
+    response = model.generate_content(
+        [
+            prompt,
+            image_part
+        ]
+    )
+
+    text = response.text.strip()
+
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
+
+    print("GEMINI RAW:", text)
+
+    return json.loads(text)
+
+
+# =====================================================
+# SERPAPI SEARCH
+# =====================================================
+
+async def search_query(client, query):
 
     try:
 
-        # BEST GUESS LABELS
-        for label in web.best_guess_labels:
+        url = "https://serpapi.com/search.json"
 
-            text = clean_text(label.label)
+        params = {
+            "engine": "google",
+            "q": query,
+            "hl": "da",
+            "gl": "dk",
+            "google_domain": "google.dk",
+            "num": 10,
+            "api_key": SERPAPI_KEY,
+        }
 
-            if text:
-                queries.append(text)
+        response = await client.get(
+            url,
+            params=params,
+            timeout=20
+        )
 
-        # VISUALLY SIMILAR URLS
-        for img in web.visually_similar_images[:20]:
+        data = response.json()
 
-            url = img.url.lower()
+        prices = []
 
-            if (
-                ".dk" in url
-                or "dba.dk" in url
-                or "facebook.com" in url
-                or "guloggratis.dk" in url
-            ):
-                urls.append(url)
+        for result in data.get("organic_results", []):
+
+            text = (
+                result.get("title", "")
+                + " "
+                + result.get("snippet", "")
+            )
+
+            found = extract_prices(text)
+
+            prices.extend(found)
+
+        print("SEARCH:", query)
+        print("FOUND:", prices)
+
+        return prices
 
     except Exception as e:
 
-        print("VISION SEARCH ERROR:", str(e))
+        print("SEARCH ERROR:", str(e))
 
-    return queries, urls
-
-
-# ---------------------------------------------------
-# SERPAPI SEARCH
-# ---------------------------------------------------
-
-def serpapi_search(query):
-
-    if not SERPAPI_KEY:
         return []
 
-    url = "https://serpapi.com/search.json"
 
-    params = {
-        "engine": "google",
-        "q": query,
-        "hl": "da",
-        "gl": "dk",
-        "num": 20,
-        "api_key": SERPAPI_KEY,
-    }
-
-    response = requests.get(
-        url,
-        params=params,
-        timeout=30
-    )
-
-    data = response.json()
-
-    prices = []
-
-    for result in data.get("organic_results", []):
-
-        text = (
-            result.get("title", "")
-            + " "
-            + result.get("snippet", "")
-        )
-
-        found = extract_prices(text)
-
-        prices.extend(found)
-
-    return prices
-
-
-# ---------------------------------------------------
+# =====================================================
 # ANALYZE
-# ---------------------------------------------------
+# =====================================================
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
@@ -242,135 +230,58 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        # ---------------------------------------------
-        # GOOGLE VISION
-        # ---------------------------------------------
+        # =========================================
+        # GEMINI ANALYZE
+        # =========================================
 
-        queries, urls = google_vision_search(image_bytes)
+        gemini_data = await analyze_image_with_gemini(
+            image_bytes
+        )
 
-        print("VISION QUERIES:", queries)
-        print("MATCH URLS:", urls)
+        print("GEMINI:", gemini_data)
 
-        # ---------------------------------------------
-        # FALLBACK LABELS
-        # ---------------------------------------------
+        searches = gemini_data.get("searches", [])
 
-        labels = []
+        # =========================================
+        # PARALLEL SEARCHES
+        # =========================================
 
-        if vision_client:
+        async with httpx.AsyncClient() as client:
 
-            image = vision.Image(content=image_bytes)
-
-            response = vision_client.label_detection(image=image)
-
-            labels = [
-                clean_text(x.description)
-                for x in response.label_annotations[:10]
+            tasks = [
+                search_query(client, q)
+                for q in searches[:5]
             ]
 
-            labels = [x for x in labels if x]
+            results = await asyncio.gather(*tasks)
 
-        print("LABELS:", labels)
+        # =========================================
+        # COLLECT PRICES
+        # =========================================
 
-        # ---------------------------------------------
-        # BUILD SEARCH QUERY
-        # ---------------------------------------------
+        all_prices = []
 
-        if queries:
+        for result in results:
+            all_prices.extend(result)
 
-            search_query = " ".join(queries[:3])
+        print("ALL PRICES:", all_prices)
 
-        elif labels:
+        all_prices = clean_prices(all_prices)
 
-            search_query = " ".join(labels[:3])
+        print("FILTERED:", all_prices)
 
-        else:
-
-            search_query = "dansk vintage møbel"
-
-        search_query += " dba facebook marketplace"
-
-        print("SEARCH:", search_query)
-
-        # ---------------------------------------------
-        # SEARCH PRICES
-        # ---------------------------------------------
-
-        prices = serpapi_search(search_query)
-
-        print("RAW PRICES:", prices)
-
-        # ---------------------------------------------
-        # ALSO EXTRACT FROM URLS
-        # ---------------------------------------------
-
-        for url in urls:
-
-            prices.extend(extract_prices(url))
-
-        # ---------------------------------------------
-        # CLEAN PRICES
-        # ---------------------------------------------
-
-        prices = [
-            x for x in prices
-            if 100 <= x <= 50000
-        ]
-
-        print("FILTERED:", prices)
-
-        # remove extreme outliers
-
-        if len(prices) >= 5:
-
-            median = statistics.median(prices)
-
-            prices = [
-                p for p in prices
-                if median * 0.35 <= p <= median * 2.5
-            ]
-
-        # ---------------------------------------------
-        # PRICE RESULT
-        # ---------------------------------------------
-
-        if len(prices) >= 3:
-
-            median_price = int(statistics.median(prices))
-
-            low = int(median_price * 0.85)
-            high = int(median_price * 1.15)
-
-            price_text = f"{low} - {high} kr"
-
-        else:
-
-            price_text = "Ukendt pris"
-
-        # ---------------------------------------------
-        # TITLE
-        # ---------------------------------------------
-
-        title = "Ukendt møbel"
-
-        if queries:
-
-            title = queries[0].title()
-
-        elif labels:
-
-            title = " ".join(labels[:3]).title()
-
-        # ---------------------------------------------
-        # RETURN
-        # ---------------------------------------------
+        # =========================================
+        # RESULT
+        # =========================================
 
         return {
-            "title": title,
-            "material": "Brugt",
-            "condition": "Almindelige brugsspor",
-            "price": price_text,
-            "found_prices": len(prices),
+            "title": gemini_data.get("title", "Ukendt objekt"),
+            "material": gemini_data.get("material", "Ukendt"),
+            "condition": "Brugt med almindelige brugsspor",
+            "price": build_price_range(all_prices),
+            "found_prices": len(all_prices),
+            "description": gemini_data.get("description", ""),
+            "searches_used": searches,
         }
 
     except Exception as e:
@@ -383,14 +294,14 @@ async def analyze(file: UploadFile = File(...)):
             "title": "Fejl",
             "material": "Ukendt",
             "condition": str(e),
-            "price": "Kunne ikke hente pris",
+            "price": "Ukendt pris",
             "found_prices": 0,
         }
 
 
-# ---------------------------------------------------
+# =====================================================
 # ROOT
-# ---------------------------------------------------
+# =====================================================
 
 @app.get("/")
 def root():
