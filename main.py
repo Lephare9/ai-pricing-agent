@@ -2,6 +2,7 @@ import os
 import io
 import re
 import json
+import base64
 import statistics
 import requests
 
@@ -65,7 +66,7 @@ app.add_middleware(
 # HELPERS
 # =========================================================
 
-DANISH_WORDS = {
+DANISH_MAP = {
     "chair": "stol",
     "armchair": "lænestol",
     "rattan": "rattan",
@@ -78,6 +79,7 @@ DANISH_WORDS = {
     "glass": "glas",
     "sofa": "sofa",
     "shelf": "hylde",
+    "furniture": "møbel",
 }
 
 
@@ -85,13 +87,13 @@ def translate_to_danish(text: str) -> str:
 
     text = text.lower()
 
-    for eng, dk in DANISH_WORDS.items():
+    for eng, dk in DANISH_MAP.items():
         text = text.replace(eng, dk)
 
     return text
 
 
-def clean_title(text: str) -> str:
+def clean_text(text: str) -> str:
 
     text = translate_to_danish(text)
 
@@ -119,10 +121,10 @@ def extract_prices(text: str) -> List[int]:
 
             try:
 
-                price = int(match)
+                value = int(match)
 
-                if 50 <= price <= 50000:
-                    prices.append(price)
+                if 75 <= value <= 50000:
+                    prices.append(value)
 
             except:
                 pass
@@ -132,8 +134,8 @@ def extract_prices(text: str) -> List[int]:
 
 def filter_prices(prices: List[int]) -> List[int]:
 
-    if not prices:
-        return []
+    if len(prices) < 2:
+        return prices
 
     prices = sorted(prices)
 
@@ -141,50 +143,86 @@ def filter_prices(prices: List[int]) -> List[int]:
 
     filtered = []
 
-    for price in prices:
+    for p in prices:
 
-        if price < median * 0.45:
+        if p < median * 0.45:
             continue
 
-        if price > median * 2.2:
+        if p > median * 2.5:
             continue
 
-        filtered.append(price)
+        filtered.append(p)
 
     return filtered
 
 
-def detect_material(title: str) -> str:
+def detect_material(text: str) -> str:
 
-    title = title.lower()
+    text = text.lower()
 
-    materials = []
+    found = []
 
-    if "træ" in title:
-        materials.append("Træ")
+    if "teak" in text:
+        found.append("Teaktræ")
 
-    if "teak" in title:
-        materials.append("Teaktræ")
+    if "eg" in text:
+        found.append("Eg")
 
-    if "eg" in title:
-        materials.append("Eg")
+    if "træ" in text:
+        found.append("Træ")
 
-    if "glas" in title:
-        materials.append("Glas")
+    if "glas" in text:
+        found.append("Glas")
 
-    if "rattan" in title:
-        materials.append("Rattan")
+    if "rattan" in text:
+        found.append("Rattan")
 
-    if "flet" in title:
-        materials.append("Flet")
+    if "flet" in text:
+        found.append("Flet")
 
-    if not materials:
+    if not found:
         return "Ukendt materiale"
 
-    return ", ".join(materials)
+    return ", ".join(list(set(found)))
 
 
-def search_google_lens(image_base64: str):
+def vision_detect_labels(image_bytes):
+
+    image = vision.Image(content=image_bytes)
+
+    response = vision_client.label_detection(image=image)
+
+    labels = []
+
+    for label in response.label_annotations[:8]:
+
+        labels.append(clean_text(label.description))
+
+    return labels
+
+
+def vision_web_detection(image_bytes):
+
+    image = vision.Image(content=image_bytes)
+
+    response = vision_client.web_detection(image=image)
+
+    web = response.web_detection
+
+    results = []
+
+    if web.web_entities:
+
+        for entity in web.web_entities[:10]:
+
+            if entity.description:
+
+                results.append(clean_text(entity.description))
+
+    return results
+
+
+def serpapi_google_lens(image_base64):
 
     url = "https://serpapi.com/search.json"
 
@@ -199,33 +237,36 @@ def search_google_lens(image_base64: str):
     response = requests.get(
         url,
         params=params,
-        timeout=30,
+        timeout=40,
     )
 
     return response.json()
 
 
-def collect_visual_titles(data) -> List[str]:
+def get_visual_titles(data):
 
     titles = []
 
     visual_matches = data.get("visual_matches", [])
 
-    for item in visual_matches[:10]:
+    for item in visual_matches[:12]:
 
         title = item.get("title")
 
-        if title:
+        if not title:
+            continue
 
-            title = clean_title(title)
+        title = clean_text(title)
 
-            if len(title) > 3:
-                titles.append(title)
+        if len(title) < 4:
+            continue
+
+        titles.append(title)
 
     return titles
 
 
-def collect_prices(data) -> List[int]:
+def get_prices(data):
 
     prices = []
 
@@ -233,54 +274,66 @@ def collect_prices(data) -> List[int]:
 
     for item in visual_matches:
 
-        text_blob = json.dumps(item)
+        blob = json.dumps(item)
 
-        found = extract_prices(text_blob)
+        found = extract_prices(blob)
 
         prices.extend(found)
 
-    shopping = data.get("shopping_results", [])
+    shopping_results = data.get("shopping_results", [])
 
-    for item in shopping:
+    for item in shopping_results:
 
-        text_blob = json.dumps(item)
+        blob = json.dumps(item)
 
-        found = extract_prices(text_blob)
+        found = extract_prices(blob)
 
         prices.extend(found)
 
     return prices
 
 
-def pick_best_title(titles: List[str]) -> str:
+def build_title(
+    labels,
+    web_entities,
+    visual_titles,
+):
 
-    if not titles:
-        return "Ukendt objekt"
+    combined = []
 
-    counter = {}
+    combined.extend(labels)
+    combined.extend(web_entities)
+    combined.extend(visual_titles)
 
-    for title in titles:
+    combined = [x for x in combined if len(x) > 2]
 
-        words = title.split()
+    if not combined:
+        return "Ukendt møbel"
+
+    counts = {}
+
+    for text in combined:
+
+        words = text.split()
 
         for word in words:
 
             if len(word) < 4:
                 continue
 
-            counter[word] = counter.get(word, 0) + 1
+            counts[word] = counts.get(word, 0) + 1
 
     sorted_words = sorted(
-        counter.items(),
+        counts.items(),
         key=lambda x: x[1],
-        reverse=True,
+        reverse=True
     )
 
-    top_words = [w[0] for w in sorted_words[:4]]
+    top_words = [x[0] for x in sorted_words[:4]]
 
-    final = " ".join(top_words)
+    final_title = " ".join(top_words)
 
-    return final.capitalize()
+    return final_title.capitalize()
 
 
 # =========================================================
@@ -302,41 +355,65 @@ async def analyze_image(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        pil_image = Image.open(io.BytesIO(image_bytes))
+        pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-        buffered = io.BytesIO()
+        buffer = io.BytesIO()
 
-        pil_image.save(buffered, format="JPEG")
+        pil.save(
+            buffer,
+            format="JPEG",
+            quality=88
+        )
 
-        image_bytes = buffered.getvalue()
+        image_bytes = buffer.getvalue()
 
-        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        image_base64 = base64.b64encode(
+            image_bytes
+        ).decode("utf-8")
 
         # =====================================================
-        # GOOGLE LENS SEARCH
+        # GOOGLE VISION
         # =====================================================
 
-        lens_data = search_google_lens(image_base64)
+        labels = vision_detect_labels(image_bytes)
+
+        print("LABELS:", labels)
+
+        web_entities = vision_web_detection(image_bytes)
+
+        print("WEB ENTITIES:", web_entities)
 
         # =====================================================
-        # VISUAL TITLES
+        # SERPAPI LENS
         # =====================================================
 
-        visual_titles = collect_visual_titles(lens_data)
+        lens_data = serpapi_google_lens(image_base64)
 
-        print("VISUAL TITLES:", visual_titles)
+        visual_titles = get_visual_titles(lens_data)
+
+        print("VISUAL MATCHES:", visual_titles)
+
+        # =====================================================
+        # TITLE
+        # =====================================================
+
+        title = build_title(
+            labels,
+            web_entities,
+            visual_titles,
+        )
 
         # =====================================================
         # PRICES
         # =====================================================
 
-        raw_prices = collect_prices(lens_data)
+        raw_prices = get_prices(lens_data)
 
         print("RAW PRICES:", raw_prices)
 
         filtered_prices = filter_prices(raw_prices)
 
-        print("FILTERED PRICES:", filtered_prices)
+        print("FILTERED:", filtered_prices)
 
         if filtered_prices:
 
@@ -349,16 +426,18 @@ async def analyze_image(file: UploadFile = File(...)):
             high_price = 0
 
         # =====================================================
-        # TITLE
-        # =====================================================
-
-        title = pick_best_title(visual_titles)
-
-        # =====================================================
         # MATERIAL
         # =====================================================
 
-        material = detect_material(title)
+        combined_text = (
+            " ".join(labels)
+            + " "
+            + " ".join(web_entities)
+            + " "
+            + " ".join(visual_titles)
+        )
+
+        material = detect_material(combined_text)
 
         # =====================================================
         # CONDITION
@@ -378,7 +457,8 @@ async def analyze_image(file: UploadFile = File(...)):
             "price_high": high_price,
             "currency": "DKK",
             "found_prices": len(filtered_prices),
-            "visual_matches_found": len(visual_titles),
+            "labels": labels,
+            "web_entities": web_entities,
             "visual_titles": visual_titles[:10],
         }
 
@@ -387,5 +467,12 @@ async def analyze_image(file: UploadFile = File(...)):
         print("ANALYZE ERROR:", str(e))
 
         return {
-            "error": str(e)
+            "title": "Ukendt",
+            "material": "Ukendt",
+            "condition": "Ukendt",
+            "price_low": 0,
+            "price_high": 0,
+            "currency": "DKK",
+            "found_prices": 0,
+            "error": str(e),
         }
