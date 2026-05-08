@@ -6,15 +6,16 @@ import os
 import io
 import re
 import json
+import base64
 import statistics
 import requests
 
 from PIL import Image
 import google.generativeai as genai
 
-# =====================================================
+# =========================================================
 # CONFIG
-# =====================================================
+# =========================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
@@ -27,12 +28,17 @@ if not SERPAPI_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-vision_model = genai.GenerativeModel("gemini-1.5-flash")
-text_model = genai.GenerativeModel("gemini-1.5-flash")
+vision_model = genai.GenerativeModel(
+    "models/gemini-1.5-flash-latest"
+)
 
-# =====================================================
+text_model = genai.GenerativeModel(
+    "models/gemini-1.5-flash-latest"
+)
+
+# =========================================================
 # FASTAPI
-# =====================================================
+# =========================================================
 
 app = FastAPI()
 
@@ -44,80 +50,137 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================================================
+# =========================================================
 # HELPERS
-# =====================================================
+# =========================================================
 
-def capitalize_text(text: str):
+STOPWORDS = {
+    "flot",
+    "smuk",
+    "fin",
+    "dejlig",
+    "moderne",
+    "klassisk",
+    "retro",
+    "vintage",
+    "gammel",
+    "unik",
+    "sjælden",
+    "dekorativ",
+    "brugt",
+    "stand",
+    "god",
+    "meget",
+    "lille",
+    "stor",
+}
+
+SEARCH_SITES = [
+    "dba.dk",
+    "facebook.com",
+    "etsy.com",
+    "ebay.com",
+    "ebay.de",
+    "trendsales.dk",
+]
+
+
+def title_case(text: str) -> str:
     if not text:
         return ""
-
-    text = text.strip()
 
     return text[:1].upper() + text[1:]
 
 
-def clean_title(title: str):
+def clean_title(title: str) -> str:
     if not title:
         return "Ukendt objekt"
 
-    return capitalize_text(title.strip())
+    title = title.strip()
+
+    title = re.sub(r"\s+", " ", title)
+
+    return title_case(title)
 
 
-def clean_material(material: str):
+def clean_material(material: str) -> str:
     if not material:
         return ""
 
-    return capitalize_text(material.strip().lower())
+    material = material.strip()
+
+    return title_case(material)
 
 
-def clean_condition(condition: str):
+def clean_condition(condition: str) -> str:
     if not condition:
-        return "God stand"
+        return ""
 
-    return capitalize_text(condition.strip().lower())
+    condition = condition.strip()
+
+    return title_case(condition)
+
+
+def simplify_query(text: str) -> str:
+    words = re.findall(r"\w+", text.lower())
+
+    cleaned = []
+
+    for w in words:
+        if len(w) < 3:
+            continue
+
+        if w in STOPWORDS:
+            continue
+
+        cleaned.append(w)
+
+    return " ".join(cleaned[:6])
+
+
+def extract_prices(text: str):
+    matches = re.findall(r"(\d{2,6})\s*(?:kr|dkk)?", text.lower())
+
+    prices = []
+
+    for m in matches:
+        try:
+            p = int(m)
+
+            if 20 <= p <= 100000:
+                prices.append(p)
+
+        except:
+            pass
+
+    return prices
+
+
+def remove_outliers(prices):
+    if len(prices) < 3:
+        return prices
+
+    median = statistics.median(prices)
+
+    filtered = []
+
+    for p in prices:
+        if median * 0.35 <= p <= median * 2.5:
+            filtered.append(p)
+
+    return filtered
 
 
 def round_to_5(value):
     return int(round(value / 5) * 5)
 
 
-# =====================================================
-# PRICE FILTERING
-# =====================================================
-
-def filter_prices(prices):
-    filtered = []
-
-    for p in prices:
-        if p < 25:
-            continue
-
-        if p > 100000:
-            continue
-
-        filtered.append(p)
-
-    if len(filtered) < 2:
-        return filtered
-
-    median_price = statistics.median(filtered)
-
-    final = []
-
-    for p in filtered:
-        if p < median_price * 0.4:
-            continue
-
-        if p > median_price * 2.0:
-            continue
-
-        final.append(p)
-
-    return final
-
-
 def calculate_price_range(prices):
+    if not prices:
+        return None
+
+    prices = remove_outliers(prices)
+
     if not prices:
         return None
 
@@ -135,158 +198,7 @@ def calculate_price_range(prices):
     return f"{low} – {high} kr"
 
 
-# =====================================================
-# IMAGE ANALYSIS
-# =====================================================
-
-def analyze_image(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes))
-
-    prompt = """
-    Du analyserer brugte møbler, designobjekter og interiør.
-
-    Returnér KUN gyldig JSON.
-
-    Format:
-
-    {
-      "title": "",
-      "material": "",
-      "condition": "",
-      "designer": ""
-    }
-
-    Regler:
-
-    - skriv kort og præcist
-    - dansk sprog
-    - ingen forklaringer
-    - ingen markdown
-    - vær konservativ
-    - halluciner ikke designer
-    - beskriv objektets faktiske funktion
-    - brug almindelig DBA/Facebook Marketplace terminologi
-    - skeln mellem:
-      - lampe
-      - lysestage
-      - krukke
-      - æske
-      - kasse
-      - maleri
-      - vase
-      - møbel
-    - designer må kun udfyldes hvis du er meget sikker
-    """
-
-    response = vision_model.generate_content([
-        prompt,
-        image
-    ])
-
-    text = response.text.strip()
-
-    text = text.replace("```json", "")
-    text = text.replace("```", "")
-
-    try:
-        data = json.loads(text)
-    except:
-        data = {
-            "title": "Ukendt objekt",
-            "material": "",
-            "condition": "God stand",
-            "designer": ""
-        }
-
-    return data
-
-
-# =====================================================
-# QUERY GENERATION
-# =====================================================
-
-def generate_search_queries(title, material, designer):
-    base = f"{title} {material}".strip()
-
-    prompt = f"""
-    Lav realistiske DBA/Facebook Marketplace søgninger.
-
-    Objekt:
-    {base}
-
-    Designer:
-    {designer}
-
-    Returnér KUN JSON array.
-
-    Regler:
-    - korte søgninger
-    - realistiske brugtmarkeds-søgninger
-    - ingen forklaringer
-    - ingen dubletter
-    - max 6 queries
-
-    Eksempel:
-    [
-      "kubus lysestage",
-      "by lassen kubus",
-      "kubus stage"
-    ]
-    """
-
-    try:
-        response = text_model.generate_content(prompt)
-
-        text = response.text.strip()
-
-        text = text.replace("```json", "")
-        text = text.replace("```", "")
-
-        queries = json.loads(text)
-
-        cleaned = []
-
-        for q in queries:
-            if isinstance(q, str):
-                cleaned.append(q.strip())
-
-        if len(cleaned) > 0:
-            return cleaned[:6]
-
-    except Exception as e:
-        print("QUERY ERROR:", e)
-
-    return [
-        f"{title} brugt",
-        f"{title} vintage",
-        f"{material} {title}"
-    ]
-
-
-# =====================================================
-# SERPAPI
-# =====================================================
-
-def extract_prices(text):
-    matches = re.findall(r"(\d+[.,]?\d*)\s*kr", text.lower())
-
-    prices = []
-
-    for match in matches:
-        try:
-            value = int(float(
-                match.replace(".", "").replace(",", ".")
-            ))
-
-            prices.append(value)
-
-        except:
-            pass
-
-    return prices
-
-
-def serp_search(query):
+def serpapi_search(query: str):
     url = "https://serpapi.com/search.json"
 
     params = {
@@ -298,117 +210,149 @@ def serp_search(query):
         "num": 10,
     }
 
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            timeout=8
-        )
+    response = requests.get(url, params=params, timeout=20)
 
-        data = response.json()
+    data = response.json()
 
-        prices = []
-
-        organic = data.get("organic_results", [])
-
-        for result in organic:
-            title = result.get("title", "")
-            snippet = result.get("snippet", "")
-
-            combined = f"{title} {snippet}"
-
-            found = extract_prices(combined)
-
-            prices.extend(found)
-
-        return prices
-
-    except Exception as e:
-        print("SERP ERROR:", e)
-
-        return []
+    return data.get("organic_results", [])
 
 
-# =====================================================
-# API
-# =====================================================
+def gather_prices(query: str):
+    all_prices = []
+
+    for site in SEARCH_SITES:
+        try:
+            full_query = f"{query} site:{site}"
+
+            results = serpapi_search(full_query)
+
+            for result in results:
+                text = ""
+
+                if "title" in result:
+                    text += " " + result["title"]
+
+                if "snippet" in result:
+                    text += " " + result["snippet"]
+
+                prices = extract_prices(text)
+
+                all_prices.extend(prices)
+
+        except Exception as e:
+            print("SEARCH ERROR:", e)
+
+    return all_prices
+
+
+# =========================================================
+# ANALYZE
+# =========================================================
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     try:
         image_bytes = await file.read()
 
-        vision = analyze_image(image_bytes)
+        image = Image.open(io.BytesIO(image_bytes))
 
-        print("VISION:", vision)
+        prompt = """
+Du analyserer et brugt objekt.
 
-        title = clean_title(
-            vision.get("title", "")
+Returnér KUN valid JSON.
+
+Format:
+
+{
+  "title": "",
+  "material": "",
+  "condition": "",
+  "designer": "",
+  "search_terms": []
+}
+
+Regler:
+- title skal være kort og præcis
+- ingen fantasinavne
+- ingen pris
+- ingen gæt på designer
+- material skal være kort
+- condition skal være realistisk
+- search_terms skal være 3-6 gode søgefraser
+"""
+
+        response = vision_model.generate_content(
+            [
+                prompt,
+                image,
+            ]
         )
 
-        material = clean_material(
-            vision.get("material", "")
+        raw = response.text.strip()
+
+        raw = raw.replace("```json", "")
+        raw = raw.replace("```", "")
+
+        vision = json.loads(raw)
+
+        title = clean_title(vision.get("title", "Ukendt objekt"))
+        material = clean_material(vision.get("material", ""))
+        condition = clean_condition(vision.get("condition", ""))
+
+        search_terms = vision.get("search_terms", [])
+
+        queries = []
+
+        queries.append(
+            simplify_query(f"{title} {material}")
         )
 
-        condition = clean_condition(
-            vision.get("condition", "")
-        )
+        for s in search_terms:
+            queries.append(simplify_query(s))
 
-        designer = vision.get("designer", "")
-
-        queries = generate_search_queries(
-            title,
-            material,
-            designer
-        )
-
-        print("QUERIES:", queries)
+        queries = list(dict.fromkeys(queries))
 
         all_prices = []
 
-        for q in queries:
-            result_prices = serp_search(q)
+        for q in queries[:5]:
+            prices = gather_prices(q)
 
-            print("QUERY:", q)
-            print("RAW:", result_prices)
+            all_prices.extend(prices)
 
-            all_prices.extend(result_prices)
+        filtered_prices = remove_outliers(all_prices)
 
-        filtered_prices = filter_prices(all_prices)
+        price_text = calculate_price_range(filtered_prices)
 
+        if not price_text:
+            price_text = "Ukendt pris"
+
+        print("VISION:", vision)
+        print("QUERIES:", queries)
+        print("RAW:", all_prices)
         print("FILTERED:", filtered_prices)
 
-        price_range = calculate_price_range(
-            filtered_prices
-        )
-
-        response = {
+        return JSONResponse({
             "title": title,
             "material": material,
             "condition": condition,
-            "designer": designer,
-            "price": price_range if price_range else "Ukendt pris",
+            "price": price_text,
             "found_prices": len(filtered_prices),
-            "queries": queries,
-            "raw_prices": filtered_prices
-        }
-
-        return JSONResponse(response)
+        })
 
     except Exception as e:
-        print("ANALYZE ERROR:", e)
+        print("ANALYZE ERROR:", str(e))
 
         return JSONResponse(
-            {
+            status_code=500,
+            content={
                 "error": str(e)
-            },
-            status_code=500
+            }
         )
 
 
-# =====================================================
-# HEALTH
-# =====================================================
+# =========================================================
+# ROOT
+# =========================================================
 
 @app.get("/")
 def root():
