@@ -69,33 +69,31 @@ app.add_middleware(
 DANISH_MAP = {
     "chair": "stol",
     "armchair": "lænestol",
-    "rattan": "rattan",
-    "wicker": "flet",
+    "table": "bord",
     "cabinet": "skab",
     "drawer": "kommode",
-    "table": "bord",
     "lamp": "lampe",
-    "wood": "træ",
-    "glass": "glas",
     "sofa": "sofa",
     "shelf": "hylde",
+    "wood": "træ",
+    "glass": "glas",
+    "metal": "metal",
+    "plastic": "plast",
     "furniture": "møbel",
+    "rattan": "rattan",
+    "wicker": "flet",
 }
 
 
-def translate_to_danish(text: str) -> str:
+def clean_text(text: str) -> str:
+
+    if not text:
+        return ""
 
     text = text.lower()
 
     for eng, dk in DANISH_MAP.items():
         text = text.replace(eng, dk)
-
-    return text
-
-
-def clean_text(text: str) -> str:
-
-    text = translate_to_danish(text)
 
     text = re.sub(r"[^a-zA-ZæøåÆØÅ0-9\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
@@ -134,7 +132,7 @@ def extract_prices(text: str) -> List[int]:
 
 def filter_prices(prices: List[int]) -> List[int]:
 
-    if len(prices) < 2:
+    if len(prices) < 3:
         return prices
 
     prices = sorted(prices)
@@ -174,6 +172,12 @@ def detect_material(text: str) -> str:
     if "glas" in text:
         found.append("Glas")
 
+    if "metal" in text:
+        found.append("Metal")
+
+    if "plast" in text:
+        found.append("Plast")
+
     if "rattan" in text:
         found.append("Rattan")
 
@@ -181,10 +185,14 @@ def detect_material(text: str) -> str:
         found.append("Flet")
 
     if not found:
-        return "Ukendt materiale"
+        return "Ukendt"
 
     return ", ".join(list(set(found)))
 
+
+# =========================================================
+# GOOGLE VISION
+# =========================================================
 
 def vision_detect_labels(image_bytes):
 
@@ -194,9 +202,12 @@ def vision_detect_labels(image_bytes):
 
     labels = []
 
-    for label in response.label_annotations[:8]:
+    for label in response.label_annotations[:10]:
 
-        labels.append(clean_text(label.description))
+        cleaned = clean_text(label.description)
+
+        if cleaned:
+            labels.append(cleaned)
 
     return labels
 
@@ -217,30 +228,61 @@ def vision_web_detection(image_bytes):
 
             if entity.description:
 
-                results.append(clean_text(entity.description))
+                cleaned = clean_text(entity.description)
+
+                if cleaned:
+                    results.append(cleaned)
 
     return results
 
 
+# =========================================================
+# SERPAPI GOOGLE LENS
+# =========================================================
+
 def serpapi_google_lens(image_base64):
 
-    url = "https://serpapi.com/search.json"
+    try:
 
-    params = {
-        "engine": "google_lens",
-        "api_key": SERPAPI_KEY,
-        "hl": "da",
-        "gl": "dk",
-        "url": f"data:image/jpeg;base64,{image_base64}",
-    }
+        url = "https://serpapi.com/search.json"
 
-    response = requests.get(
-        url,
-        params=params,
-        timeout=40,
-    )
+        params = {
+            "engine": "google_lens",
+            "api_key": SERPAPI_KEY,
+            "hl": "da",
+            "gl": "dk",
+            "url": f"data:image/jpeg;base64,{image_base64}",
+        }
 
-    return response.json()
+        response = requests.get(
+            url,
+            params=params,
+            timeout=45,
+        )
+
+        print("SERPAPI STATUS:", response.status_code)
+        print("SERPAPI RAW:", response.text[:300])
+
+        if response.status_code != 200:
+            return {}
+
+        if not response.text.strip():
+            return {}
+
+        try:
+            return response.json()
+
+        except Exception as e:
+
+            print("SERPAPI JSON ERROR:", str(e))
+
+            return {}
+
+    except Exception as e:
+
+        print("SERPAPI ERROR:", str(e))
+
+        return {}
 
 
 def get_visual_titles(data):
@@ -293,11 +335,11 @@ def get_prices(data):
     return prices
 
 
-def build_title(
-    labels,
-    web_entities,
-    visual_titles,
-):
+# =========================================================
+# TITLE BUILDER
+# =========================================================
+
+def build_title(labels, web_entities, visual_titles):
 
     combined = []
 
@@ -353,6 +395,10 @@ async def analyze_image(file: UploadFile = File(...)):
 
     try:
 
+        # =====================================================
+        # IMAGE
+        # =====================================================
+
         image_bytes = await file.read()
 
         pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -384,36 +430,32 @@ async def analyze_image(file: UploadFile = File(...)):
         print("WEB ENTITIES:", web_entities)
 
         # =====================================================
-        # SERPAPI LENS
+        # SERPAPI
         # =====================================================
 
         lens_data = serpapi_google_lens(image_base64)
 
-        visual_titles = get_visual_titles(lens_data)
+        visual_titles = []
 
-        print("VISUAL MATCHES:", visual_titles)
+        if lens_data:
+            visual_titles = get_visual_titles(lens_data)
 
-        # =====================================================
-        # TITLE
-        # =====================================================
+        print("VISUAL TITLES:", visual_titles)
 
-        title = build_title(
-            labels,
-            web_entities,
-            visual_titles,
-        )
+        raw_prices = []
 
-        # =====================================================
-        # PRICES
-        # =====================================================
-
-        raw_prices = get_prices(lens_data)
+        if lens_data:
+            raw_prices = get_prices(lens_data)
 
         print("RAW PRICES:", raw_prices)
 
         filtered_prices = filter_prices(raw_prices)
 
         print("FILTERED:", filtered_prices)
+
+        # =====================================================
+        # PRICE
+        # =====================================================
 
         if filtered_prices:
 
@@ -424,6 +466,16 @@ async def analyze_image(file: UploadFile = File(...)):
 
             low_price = 0
             high_price = 0
+
+        # =====================================================
+        # TITLE
+        # =====================================================
+
+        title = build_title(
+            labels,
+            web_entities,
+            visual_titles,
+        )
 
         # =====================================================
         # MATERIAL
@@ -440,26 +492,20 @@ async def analyze_image(file: UploadFile = File(...)):
         material = detect_material(combined_text)
 
         # =====================================================
-        # CONDITION
-        # =====================================================
-
-        condition = "Brugt med almindelige brugsspor"
-
-        # =====================================================
         # RESPONSE
         # =====================================================
 
         return {
             "title": title,
             "material": material,
-            "condition": condition,
+            "condition": "Brugt med almindelige brugsspor",
             "price_low": low_price,
             "price_high": high_price,
             "currency": "DKK",
             "found_prices": len(filtered_prices),
             "labels": labels,
             "web_entities": web_entities,
-            "visual_titles": visual_titles[:10],
+            "visual_titles": visual_titles,
         }
 
     except Exception as e:
