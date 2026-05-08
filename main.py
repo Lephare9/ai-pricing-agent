@@ -2,7 +2,6 @@ import os
 import io
 import re
 import json
-import base64
 import statistics
 import requests
 
@@ -66,82 +65,40 @@ app.add_middleware(
 # HELPERS
 # =========================================================
 
-DANISH_STOPWORDS = {
-    "med",
-    "og",
-    "på",
-    "i",
-    "af",
-    "den",
-    "det",
-    "til",
-    "for",
-    "en",
-    "et",
-    "lille",
-    "stor",
-    "små",
-    "brugt",
-    "retro",
-    "vintage",
-    "teak",
-    "teaktræ",
+DANISH_WORDS = {
+    "chair": "stol",
+    "armchair": "lænestol",
+    "rattan": "rattan",
+    "wicker": "flet",
+    "cabinet": "skab",
+    "drawer": "kommode",
+    "table": "bord",
+    "lamp": "lampe",
+    "wood": "træ",
+    "glass": "glas",
+    "sofa": "sofa",
+    "shelf": "hylde",
 }
 
 
-def clean_text(text: str) -> str:
+def translate_to_danish(text: str) -> str:
+
     text = text.lower()
+
+    for eng, dk in DANISH_WORDS.items():
+        text = text.replace(eng, dk)
+
+    return text
+
+
+def clean_title(text: str) -> str:
+
+    text = translate_to_danish(text)
+
     text = re.sub(r"[^a-zA-ZæøåÆØÅ0-9\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
+
     return text.strip()
-
-
-def build_search_queries(
-    web_entities: List[str],
-    labels: List[str],
-) -> List[str]:
-
-    terms = []
-
-    for item in web_entities:
-        item = clean_text(item)
-
-        if len(item) < 3:
-            continue
-
-        terms.append(item)
-
-    for item in labels:
-        item = clean_text(item)
-
-        if len(item) < 3:
-            continue
-
-        terms.append(item)
-
-    final_terms = []
-
-    for item in terms:
-
-        words = [
-            w for w in item.split()
-            if w not in DANISH_STOPWORDS and len(w) > 2
-        ]
-
-        cleaned = " ".join(words)
-
-        if cleaned and cleaned not in final_terms:
-            final_terms.append(cleaned)
-
-    queries = []
-
-    if final_terms:
-        queries.append(final_terms[0])
-
-    if len(final_terms) >= 2:
-        queries.append(final_terms[0] + " " + final_terms[1])
-
-    return queries[:3]
 
 
 def extract_prices(text: str) -> List[int]:
@@ -151,14 +108,17 @@ def extract_prices(text: str) -> List[int]:
     patterns = [
         r"(\d{2,5})\s?kr",
         r"kr\s?(\d{2,5})",
-        r"(\d{2,5})",
+        r"(\d{2,5})\s?dkk",
     ]
 
     for pattern in patterns:
+
         matches = re.findall(pattern, text.lower())
 
         for match in matches:
+
             try:
+
                 price = int(match)
 
                 if 50 <= price <= 50000:
@@ -181,47 +141,97 @@ def filter_prices(prices: List[int]) -> List[int]:
 
     filtered = []
 
-    for p in prices:
+    for price in prices:
 
-        if p < median * 0.35:
+        if price < median * 0.45:
             continue
 
-        if p > median * 2.5:
+        if price > median * 2.2:
             continue
 
-        filtered.append(p)
+        filtered.append(price)
 
     return filtered
 
 
-def search_google_shopping(query: str):
+def detect_material(title: str) -> str:
+
+    title = title.lower()
+
+    materials = []
+
+    if "træ" in title:
+        materials.append("Træ")
+
+    if "teak" in title:
+        materials.append("Teaktræ")
+
+    if "eg" in title:
+        materials.append("Eg")
+
+    if "glas" in title:
+        materials.append("Glas")
+
+    if "rattan" in title:
+        materials.append("Rattan")
+
+    if "flet" in title:
+        materials.append("Flet")
+
+    if not materials:
+        return "Ukendt materiale"
+
+    return ", ".join(materials)
+
+
+def search_google_lens(image_base64: str):
 
     url = "https://serpapi.com/search.json"
 
     params = {
-        "engine": "google",
-        "q": query,
-        "gl": "dk",
-        "hl": "da",
+        "engine": "google_lens",
         "api_key": SERPAPI_KEY,
+        "hl": "da",
+        "gl": "dk",
+        "url": f"data:image/jpeg;base64,{image_base64}",
     }
 
     response = requests.get(
         url,
         params=params,
-        timeout=10,
+        timeout=30,
     )
 
     return response.json()
+
+
+def collect_visual_titles(data) -> List[str]:
+
+    titles = []
+
+    visual_matches = data.get("visual_matches", [])
+
+    for item in visual_matches[:10]:
+
+        title = item.get("title")
+
+        if title:
+
+            title = clean_title(title)
+
+            if len(title) > 3:
+                titles.append(title)
+
+    return titles
 
 
 def collect_prices(data) -> List[int]:
 
     prices = []
 
-    organic = data.get("organic_results", [])
+    visual_matches = data.get("visual_matches", [])
 
-    for item in organic:
+    for item in visual_matches:
 
         text_blob = json.dumps(item)
 
@@ -242,17 +252,35 @@ def collect_prices(data) -> List[int]:
     return prices
 
 
-def estimate_condition(image_labels: List[str]) -> str:
+def pick_best_title(titles: List[str]) -> str:
 
-    labels_text = " ".join(image_labels).lower()
+    if not titles:
+        return "Ukendt objekt"
 
-    if "damaged" in labels_text:
-        return "Brugt med tydelige brugsspor"
+    counter = {}
 
-    if "wood" in labels_text:
-        return "Brugt med almindelige brugsspor"
+    for title in titles:
 
-    return "Brugt stand"
+        words = title.split()
+
+        for word in words:
+
+            if len(word) < 4:
+                continue
+
+            counter[word] = counter.get(word, 0) + 1
+
+    sorted_words = sorted(
+        counter.items(),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    top_words = [w[0] for w in sorted_words[:4]]
+
+    final = " ".join(top_words)
+
+    return final.capitalize()
 
 
 # =========================================================
@@ -261,6 +289,7 @@ def estimate_condition(image_labels: List[str]) -> str:
 
 @app.get("/")
 async def root():
+
     return {
         "status": "ok"
     }
@@ -279,77 +308,40 @@ async def analyze_image(file: UploadFile = File(...)):
 
         pil_image.save(buffered, format="JPEG")
 
-        content = buffered.getvalue()
+        image_bytes = buffered.getvalue()
 
-        vision_image = vision.Image(content=content)
-
-        # =====================================================
-        # WEB DETECTION
-        # =====================================================
-
-        web_detection = vision_client.web_detection(
-            image=vision_image
-        ).web_detection
-
-        web_entities = []
-
-        for entity in web_detection.web_entities[:5]:
-
-            if entity.description:
-                web_entities.append(entity.description)
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
         # =====================================================
-        # LABELS
+        # GOOGLE LENS SEARCH
         # =====================================================
 
-        label_response = vision_client.label_detection(
-            image=vision_image
-        )
-
-        labels = []
-
-        for label in label_response.label_annotations[:10]:
-            labels.append(label.description)
-
-        print("WEB ENTITIES:", web_entities)
-        print("LABELS:", labels)
+        lens_data = search_google_lens(image_base64)
 
         # =====================================================
-        # SEARCH QUERIES
+        # VISUAL TITLES
         # =====================================================
 
-        queries = build_search_queries(
-            web_entities,
-            labels,
-        )
+        visual_titles = collect_visual_titles(lens_data)
 
-        print("QUERIES:", queries)
+        print("VISUAL TITLES:", visual_titles)
 
-        all_prices = []
+        # =====================================================
+        # PRICES
+        # =====================================================
 
-        for query in queries:
+        raw_prices = collect_prices(lens_data)
 
-            try:
+        print("RAW PRICES:", raw_prices)
 
-                result = search_google_shopping(query)
+        filtered_prices = filter_prices(raw_prices)
 
-                prices = collect_prices(result)
-
-                all_prices.extend(prices)
-
-            except Exception as e:
-                print("SEARCH ERROR:", e)
-
-        print("RAW PRICES:", all_prices)
-
-        filtered_prices = filter_prices(all_prices)
-
-        print("FILTERED:", filtered_prices)
+        print("FILTERED PRICES:", filtered_prices)
 
         if filtered_prices:
 
-            low_price = int(min(filtered_prices))
-            high_price = int(max(filtered_prices))
+            low_price = min(filtered_prices)
+            high_price = max(filtered_prices)
 
         else:
 
@@ -360,31 +352,23 @@ async def analyze_image(file: UploadFile = File(...)):
         # TITLE
         # =====================================================
 
-        title = "Ukendt objekt"
-
-        if web_entities:
-            title = web_entities[0]
-
-        elif labels:
-            title = " ".join(labels[:3])
-
-        title = title.capitalize()
+        title = pick_best_title(visual_titles)
 
         # =====================================================
         # MATERIAL
         # =====================================================
 
-        material = "Ukendt materiale"
+        material = detect_material(title)
 
-        labels_text = " ".join(labels).lower()
+        # =====================================================
+        # CONDITION
+        # =====================================================
 
-        if "wood" in labels_text:
-            material = "Træ"
+        condition = "Brugt med almindelige brugsspor"
 
-        if "glass" in labels_text:
-            material += ", glas"
-
-        condition = estimate_condition(labels)
+        # =====================================================
+        # RESPONSE
+        # =====================================================
 
         return {
             "title": title,
@@ -394,9 +378,8 @@ async def analyze_image(file: UploadFile = File(...)):
             "price_high": high_price,
             "currency": "DKK",
             "found_prices": len(filtered_prices),
-            "queries_used": queries,
-            "web_entities": web_entities,
-            "labels": labels,
+            "visual_matches_found": len(visual_titles),
+            "visual_titles": visual_titles[:10],
         }
 
     except Exception as e:
