@@ -1,24 +1,15 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-from PIL import Image
-
-from serpapi import GoogleSearch
 from google.cloud import vision
-from google.oauth2 import service_account
 
-import io
+import requests
+import statistics
+import tempfile
+import json
 import os
 import re
-import json
 import base64
-import statistics
-import requests
-
-
-# ==========================================
-# FASTAPI
-# ==========================================
 
 app = FastAPI()
 
@@ -30,19 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ==========================================
-# ENV
-# ==========================================
-
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 IMGBB_KEY = os.getenv("IMGBB_KEY")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
 
-# ==========================================
+# -----------------------------
 # GOOGLE VISION AUTH
-# ==========================================
+# -----------------------------
 
 vision_client = None
 
@@ -52,86 +38,79 @@ try:
 
         creds_dict = json.loads(GOOGLE_CREDS_JSON)
 
-        credentials = service_account.Credentials.from_service_account_info(
-            creds_dict
-        )
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            delete=False
+        ) as f:
 
-        vision_client = vision.ImageAnnotatorClient(
-            credentials=credentials
-        )
+            json.dump(creds_dict, f)
+            creds_path = f.name
+
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
+
+        vision_client = vision.ImageAnnotatorClient()
 
         print("GOOGLE VISION READY")
 
-except Exception as e:
+    else:
+        print("GOOGLE_CREDS_JSON missing")
 
+except Exception as e:
     print("VISION INIT ERROR:", str(e))
 
 
-# ==========================================
-# STOPWORDS
-# ==========================================
-
-STOPWORDS = [
-    "amazon",
-    "ebay",
-    "etsy",
-    "chair",
-    "table",
-    "wood",
-    "plastic",
-    "display",
-    "screen",
-    "device",
-    "monitor",
-    "furniture",
-    "metal",
-    "black",
-    "white",
-    "grey",
-    "gray",
-    "brown",
-    "interior",
-    "design",
-]
-
-
-# ==========================================
-# CLEAN TEXT
-# ==========================================
+# -----------------------------
+# HELPERS
+# -----------------------------
 
 def clean_text(text):
 
+    if not text:
+        return ""
+
     text = text.lower()
 
-    for word in STOPWORDS:
+    blacklist = [
+        "chair",
+        "table",
+        "wood",
+        "furniture",
+        "metal",
+        "display device",
+        "flat panel display",
+        "plastic",
+        "silver",
+        "grey",
+        "black",
+        "interior design",
+        "home decor",
+        "product",
+        "room",
+    ]
+
+    for word in blacklist:
         text = text.replace(word, "")
 
-    text = re.sub(r"[^a-zæøå0-9 ]", " ", text)
+    text = re.sub(r"[^a-zA-ZæøåÆØÅ0-9 ]", " ", text)
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
-# ==========================================
-# EXTRACT PRICES
-# ==========================================
-
 def extract_prices(text):
 
     prices = []
 
-    matches = re.findall(
-        r'(\d{2,5})\s?(kr|dkk)?',
-        text.lower()
-    )
+    matches = re.findall(r'(\d{2,5})\s?(?:kr|,-)', text.lower())
 
     for match in matches:
 
         try:
 
-            price = int(match[0])
+            price = int(match)
 
-            if 40 <= price <= 50000:
+            if 50 <= price <= 50000:
                 prices.append(price)
 
         except:
@@ -140,342 +119,219 @@ def extract_prices(text):
     return prices
 
 
-# ==========================================
-# FILTER PRICES
-# ==========================================
-
-def filter_prices(prices):
-
-    if not prices:
-        return []
-
-    median = statistics.median(prices)
-
-    filtered = []
-
-    for p in prices:
-
-        if median * 0.35 <= p <= median * 2.5:
-            filtered.append(p)
-
-    return filtered
-
-
-# ==========================================
-# PRICE RANGE
-# ==========================================
-
-def build_price_range(prices):
-
-    if not prices:
-        return "Ukendt pris"
-
-    prices = sorted(prices)
-
-    if len(prices) == 1:
-        return f"{prices[0]} kr"
-
-    low = int(statistics.quantiles(prices, n=4)[0])
-    high = int(statistics.quantiles(prices, n=4)[2])
-
-    if high < low:
-        high = max(prices)
-
-    return f"{low} – {high} kr"
-
-
-# ==========================================
-# GOOGLE VISION ANALYSE
-# ==========================================
-
-def analyze_with_vision(image_bytes):
-
-    if not vision_client:
-        return {
-            "title": "Ukendt møbel",
-            "labels": [],
-            "entities": [],
-        }
-
-    image = vision.Image(content=image_bytes)
-
-    # ---------------------------
-    # LABELS
-    # ---------------------------
-
-    labels_response = vision_client.label_detection(image=image)
-
-    labels = []
-
-    for label in labels_response.label_annotations:
-
-        txt = clean_text(label.description)
-
-        if txt and txt not in labels:
-            labels.append(txt)
-
-    print("LABELS:", labels)
-
-    # ---------------------------
-    # WEB DETECTION
-    # ---------------------------
-
-    web_response = vision_client.web_detection(image=image)
-
-    web_entities = []
-
-    if web_response.web_detection.web_entities:
-
-        for entity in web_response.web_detection.web_entities:
-
-            if entity.description:
-
-                txt = clean_text(entity.description)
-
-                if len(txt) > 2:
-                    web_entities.append(txt)
-
-    print("WEB ENTITIES:", web_entities)
-
-    # ---------------------------
-    # TITLE
-    # ---------------------------
-
-    title = "Ukendt møbel"
-
-    if web_entities:
-        title = web_entities[0]
-
-    elif labels:
-        title = " ".join(labels[:3])
-
-    return {
-        "title": title,
-        "labels": labels,
-        "entities": web_entities,
-    }
-
-
-# ==========================================
-# UPLOAD IMAGE
-# ==========================================
-
 def upload_to_imgbb(image_bytes):
 
     if not IMGBB_KEY:
-        return None
+        raise Exception("IMGBB_KEY mangler")
+
+    encoded = base64.b64encode(image_bytes).decode()
+
+    response = requests.post(
+        "https://api.imgbb.com/1/upload",
+        data={
+            "key": IMGBB_KEY,
+            "image": encoded
+        },
+        timeout=30
+    )
+
+    data = response.json()
+
+    return data["data"]["url"]
+
+
+def google_vision_search(image_bytes):
+
+    if not vision_client:
+        return []
+
+    image = vision.Image(content=image_bytes)
+
+    response = vision_client.web_detection(image=image)
+
+    results = []
 
     try:
 
-        encoded = base64.b64encode(image_bytes)
+        web = response.web_detection
 
-        response = requests.post(
-            f"https://api.imgbb.com/1/upload?key={IMGBB_KEY}",
-            files={
-                "image": encoded
-            },
-            timeout=30
-        )
+        for page in web.pages_with_matching_images[:10]:
 
-        data = response.json()
+            url = page.url.lower()
 
-        return data["data"]["url"]
+            if (
+                ".dk" in url
+                or "dba.dk" in url
+                or "facebook.com" in url
+                or "guloggratis.dk" in url
+            ):
+                results.append(url)
 
     except Exception as e:
+        print("VISION SEARCH ERROR:", str(e))
 
-        print("IMGBB ERROR:", str(e))
-
-        return None
+    return results
 
 
-# ==========================================
-# GOOGLE LENS
-# ==========================================
+def serpapi_search(query):
 
-def google_lens_search(image_url):
+    if not SERPAPI_KEY:
+        return []
+
+    url = "https://serpapi.com/search.json"
 
     params = {
-        "engine": "google_lens",
-        "url": image_url,
-        "api_key": SERPAPI_KEY,
+        "engine": "google",
+        "q": query,
         "hl": "da",
         "gl": "dk",
+        "api_key": SERPAPI_KEY,
     }
 
-    search = GoogleSearch(params)
+    response = requests.get(url, params=params, timeout=30)
 
-    return search.get_dict()
-
-
-# ==========================================
-# COLLECT PRICES
-# ==========================================
-
-def collect_prices(results):
+    data = response.json()
 
     prices = []
 
-    visual_matches = results.get("visual_matches", [])
-    related_content = results.get("related_content", [])
-    shopping_results = results.get("shopping_results", [])
+    for result in data.get("organic_results", []):
 
-    # ---------------------------------
-    # VISUAL MATCHES
-    # ---------------------------------
+        snippet = (
+            result.get("snippet", "")
+            + " "
+            + result.get("title", "")
+        )
 
-    for item in visual_matches[:20]:
+        prices.extend(extract_prices(snippet))
 
-        text = ""
-
-        if item.get("title"):
-            text += " " + item["title"]
-
-        if item.get("source"):
-            text += " " + item["source"]
-
-        if item.get("price"):
-            text += " " + str(item["price"])
-
-        found = extract_prices(text)
-
-        prices.extend(found)
-
-    # ---------------------------------
-    # RELATED CONTENT
-    # ---------------------------------
-
-    for item in related_content[:20]:
-
-        text = ""
-
-        if item.get("title"):
-            text += " " + item["title"]
-
-        if item.get("price"):
-            text += " " + str(item["price"])
-
-        found = extract_prices(text)
-
-        prices.extend(found)
-
-    # ---------------------------------
-    # SHOPPING RESULTS
-    # ---------------------------------
-
-    for item in shopping_results[:20]:
-
-        text = ""
-
-        if item.get("title"):
-            text += " " + item["title"]
-
-        if item.get("price"):
-            text += " " + str(item["price"])
-
-        found = extract_prices(text)
-
-        prices.extend(found)
-
-    print("RAW PRICES:", prices)
-
-    filtered = filter_prices(prices)
-
-    print("FILTERED:", filtered)
-
-    return filtered
+    return prices
 
 
-# ==========================================
-# ANALYZE
-# ==========================================
+# -----------------------------
+# MAIN ANALYZE
+# -----------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
     try:
 
-        contents = await file.read()
+        image_bytes = await file.read()
 
-        # ---------------------------
-        # RESIZE IMAGE
-        # ---------------------------
+        # -----------------------------
+        # GOOGLE VISION LABELS
+        # -----------------------------
 
-        img = Image.open(io.BytesIO(contents))
+        labels = []
 
-        img.thumbnail((1200, 1200))
+        title = "Ukendt møbel"
 
-        buffer = io.BytesIO()
+        if vision_client:
 
-        img.save(
-            buffer,
-            format="JPEG",
-            quality=85
-        )
+            image = vision.Image(content=image_bytes)
 
-        image_bytes = buffer.getvalue()
+            response = vision_client.label_detection(image=image)
 
-        # ---------------------------
-        # GOOGLE VISION
-        # ---------------------------
+            labels = [
+                clean_text(label.description)
+                for label in response.label_annotations[:8]
+            ]
 
-        vision_data = analyze_with_vision(image_bytes)
+            labels = [x for x in labels if x]
 
-        # ---------------------------
-        # UPLOAD IMAGE
-        # ---------------------------
+            print("LABELS:", labels)
 
-        image_url = upload_to_imgbb(image_bytes)
+        # -----------------------------
+        # WEB DETECTION
+        # -----------------------------
 
-        if not image_url:
+        urls = google_vision_search(image_bytes)
 
-            return {
-                "title": "Fejl",
-                "material": "Ukendt",
-                "condition": "Ukendt",
-                "price": "Kunne ikke hente pris",
-                "found_prices": 0,
-            }
+        print("MATCH URLS:", urls)
 
-        print("IMAGE URL:", image_url)
+        # -----------------------------
+        # BUILD DANISH SEARCH
+        # -----------------------------
 
-        # ---------------------------
-        # GOOGLE LENS
-        # ---------------------------
+        search_query = " ".join(labels[:4])
 
-        lens_results = google_lens_search(image_url)
+        if not search_query:
+            search_query = "dansk møbel"
 
-        prices = collect_prices(lens_results)
+        search_query += " brugt dba facebook marketplace"
 
-        # ---------------------------
-        # RESULT
-        # ---------------------------
+        print("SEARCH:", search_query)
 
-        if prices:
+        # -----------------------------
+        # SERPAPI
+        # -----------------------------
 
-            return {
-                "title": vision_data["title"].title(),
-                "material": "Brugt møbel",
-                "condition": "Brugt med almindelige brugsspor",
-                "price": build_price_range(prices),
-                "found_prices": len(prices),
-            }
+        prices = serpapi_search(search_query)
+
+        print("RAW PRICES:", prices)
+
+        # -----------------------------
+        # FALLBACK FROM URL TEXT
+        # -----------------------------
+
+        for url in urls:
+
+            prices.extend(extract_prices(url))
+
+        # -----------------------------
+        # CLEAN PRICES
+        # -----------------------------
+
+        prices = [
+            p for p in prices
+            if 100 <= p <= 25000
+        ]
+
+        print("FILTERED:", prices)
+
+        if len(prices) >= 3:
+
+            median_price = int(statistics.median(prices))
+
+            low = int(median_price * 0.8)
+            high = int(median_price * 1.2)
+
+            price_text = f"{low} - {high} kr"
+
+        else:
+
+            price_text = "Ukendt pris"
+
+        # -----------------------------
+        # TITLE
+        # -----------------------------
+
+        if labels:
+            title = " ".join(labels[:3]).title()
 
         return {
-            "title": vision_data["title"].title(),
-            "material": "Brugt møbel",
-            "condition": "Brugt med almindelige brugsspor",
-            "price": "Ukendt pris",
-            "found_prices": 0,
+            "title": title,
+            "material": "Brugt",
+            "condition": "Almindelige brugsspor",
+            "price": price_text,
+            "found_prices": len(prices),
         }
 
     except Exception as e:
 
-        print("ANALYZE ERROR:", str(e))
+        import traceback
+
+        traceback.print_exc()
 
         return {
             "title": "Fejl",
             "material": "Ukendt",
-            "condition": "Ukendt",
+            "condition": str(e),
             "price": "Kunne ikke hente pris",
             "found_prices": 0,
         }
+
+
+@app.get("/")
+def root():
+    return {"status": "running"}
