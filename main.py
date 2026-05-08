@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from openai import OpenAI
 
 import os
 import io
@@ -9,8 +8,10 @@ import re
 import json
 import base64
 import requests
+
 from statistics import median
 from PIL import Image
+from openai import OpenAI
 
 app = FastAPI()
 
@@ -28,56 +29,65 @@ SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-# -----------------------------
-# IMAGE -> BASE64
-# -----------------------------
-def image_to_base64(image_bytes):
+def clean_text(text):
+    if not text:
+        return ""
 
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    text = text.strip()
+    text = re.sub(r"\s+", " ", text)
+
+    return text
+
+
+def resize_image(image_bytes):
+    image = Image.open(io.BytesIO(image_bytes))
 
     max_size = 1200
-    image.thumbnail((max_size, max_size))
 
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=85)
+    if image.width > max_size or image.height > max_size:
+        image.thumbnail((max_size, max_size))
 
-    return base64.b64encode(buffer.getvalue()).decode()
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=85)
+
+    return output.getvalue()
 
 
-# -----------------------------
-# OPENAI VISION
-# -----------------------------
-def analyze_image_openai(base64_image):
+def detect_item(image_bytes):
+
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {
+                "role": "system",
+                "content": """
+Du analyserer brugte ting fra DBA/loppemarked.
+
+Returnér KUN gyldig JSON.
+
+Regler:
+- title = kort dansk produkttitel
+- designer = designer/navn hvis kendt
+- material = primært materiale
+- condition = kort dansk stand
+
+Eksempel:
+{
+  "title":"Kubus lysestage",
+  "designer":"Mogens Lassen",
+  "material":"metal",
+  "condition":"god stand"
+}
+"""
+            },
+            {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": """
-Analyser objektet på billedet.
-
-Returner KUN valid JSON:
-
-{
-"title":"",
-"designer":"",
-"material":"",
-"condition":""
-}
-
-Regler:
-- identificer objekt meget præcist
-- find designer hvis muligt
-- brug dansk
-- korte beskrivelser
-- condition skal være realistisk
-- ingen forklaringer
-- kun JSON
-"""
+                        "text": "Analyser dette billede"
                     },
                     {
                         "type": "image_url",
@@ -88,125 +98,145 @@ Regler:
                 ]
             }
         ],
-        max_tokens=300
+        max_tokens=200
     )
 
     text = response.choices[0].message.content.strip()
 
     try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
+        data = json.loads(text)
 
-        if match:
-            return json.loads(match.group())
-
-    except:
-        pass
-
-    return {
-        "title": "Ukendt",
-        "designer": "",
-        "material": "",
-        "condition": "Ukendt stand"
-    }
-
-
-# -----------------------------
-# SERP SEARCH
-# -----------------------------
-def serp_prices(query):
-
-    try:
-
-        params = {
-            "engine": "google",
-            "q": query,
-            "api_key": SERPAPI_KEY,
-            "num": 20,
-            "gl": "dk",
-            "hl": "da"
+        return {
+            "title": clean_text(data.get("title", "Ukendt")),
+            "designer": clean_text(data.get("designer", "")),
+            "material": clean_text(data.get("material", "")),
+            "condition": clean_text(data.get("condition", "Brugt"))
         }
 
-        response = requests.get(
-            "https://serpapi.com/search.json",
-            params=params,
-            timeout=8
-        )
+    except Exception:
+        return {
+            "title": "Ukendt",
+            "designer": "",
+            "material": "",
+            "condition": "Brugt"
+        }
 
-        data = response.json()
 
-        prices = []
+def build_query(vision):
 
-        text_blob = json.dumps(data)
+    parts = []
 
-        matches = re.findall(r"(\d{2,5})\s?(?:kr|dkk)", text_blob.lower())
+    if vision["designer"]:
+        parts.append(vision["designer"])
 
-        for m in matches:
+    if vision["title"]:
+        parts.append(vision["title"])
+
+    if vision["material"]:
+        parts.append(vision["material"])
+
+    parts.append("brugt")
+
+    query = " ".join(parts)
+
+    query = re.sub(r"\s+", " ", query)
+
+    return query.strip()
+
+
+def extract_prices(data):
+
+    prices = []
+
+    organic = data.get("organic_results", [])
+
+    for item in organic:
+
+        text = f"""
+        {item.get('title', '')}
+        {item.get('snippet', '')}
+        """
+
+        matches = re.findall(r"(\d{2,5})\s*kr", text.lower())
+
+        for match in matches:
             try:
-                value = int(m)
+                price = int(match)
 
-                if 50 <= value <= 25000:
-                    prices.append(value)
+                if 20 <= price <= 50000:
+                    prices.append(price)
 
             except:
                 pass
 
-        print("RAW:", prices)
+    return prices
 
-        prices = sorted(list(set(prices)))
 
-        filtered = []
+def filter_prices(prices):
 
-        if prices:
+    if not prices:
+        return []
 
-            med = median(prices)
+    prices = sorted(prices)
 
-            for p in prices:
+    q1 = prices[len(prices) // 4]
+    q3 = prices[(len(prices) * 3) // 4]
 
-                if p >= med * 0.45 and p <= med * 2.2:
-                    filtered.append(p)
+    iqr = q3 - q1
 
+    low = q1 - (1.5 * iqr)
+    high = q3 + (1.5 * iqr)
+
+    filtered = [
+        p for p in prices
+        if low <= p <= high
+    ]
+
+    if not filtered:
+        filtered = prices
+
+    return filtered
+
+
+def search_prices(query):
+
+    if not SERPAPI_KEY:
+        return []
+
+    try:
+
+        response = requests.get(
+            "https://serpapi.com/search.json",
+            params={
+                "engine": "google",
+                "q": query,
+                "api_key": SERPAPI_KEY,
+                "hl": "da",
+                "gl": "dk",
+                "num": 10
+            },
+            timeout=12
+        )
+
+        data = response.json()
+
+        raw_prices = extract_prices(data)
+
+        filtered = filter_prices(raw_prices)
+
+        print("QUERY:", query)
+        print("RAW:", raw_prices)
         print("FILTERED:", filtered)
 
         return filtered
 
     except Exception as e:
 
-        print("SERP ERROR:", e)
+        print("SERP ERROR:", str(e))
+
         return []
 
 
-# -----------------------------
-# PRICE ENGINE
-# -----------------------------
-def build_price(prices):
-
-    if not prices:
-        return {
-            "price": "Ukendt pris",
-            "found": 0
-        }
-
-    prices = sorted(prices)
-
-    if len(prices) == 1:
-
-        low = prices[0]
-        high = prices[0]
-
-    else:
-
-        low = int(prices[len(prices) // 3])
-        high = int(prices[(len(prices) * 2) // 3])
-
-    return {
-        "price": f"{low} – {high} kr",
-        "found": len(prices)
-    }
-
-
-# -----------------------------
-# ANALYZE ENDPOINT
-# -----------------------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
@@ -214,50 +244,49 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        base64_image = image_to_base64(image_bytes)
+        image_bytes = resize_image(image_bytes)
 
-        vision = analyze_image_openai(base64_image)
+        vision = detect_item(image_bytes)
 
         print("VISION:", vision)
 
-        title = vision.get("title", "Ukendt")
-        designer = vision.get("designer", "")
-        material = vision.get("material", "")
-        condition = vision.get("condition", "God stand")
+        query = build_query(vision)
 
-        query_parts = []
+        prices = search_prices(query)
 
-        if designer:
-            query_parts.append(designer)
+        if prices:
 
-        if title:
-            query_parts.append(title)
+            median_price = int(median(prices))
 
-        if material:
-            query_parts.append(material)
+            low = min(prices)
+            high = max(prices)
 
-        query_parts.append("brugt")
+            if low != high:
+                price_text = f"{low} – {high} kr"
+            else:
+                price_text = f"{median_price} kr"
 
-        query = " ".join(query_parts)
+        else:
 
-        print("QUERY:", query)
-
-        prices = serp_prices(query)
-
-        result = build_price(prices)
+            median_price = None
+            price_text = "Ukendt pris"
 
         return JSONResponse({
-            "title": title,
-            "designer": designer,
-            "material": material,
-            "condition": condition,
-            "price": result["price"],
-            "found": result["found"]
+            "title": vision["title"],
+            "designer": vision["designer"],
+            "material": vision["material"],
+            "condition": vision["condition"],
+
+            "price": price_text,
+
+            "found_prices": len(prices),
+
+            "prices": prices
         })
 
     except Exception as e:
 
-        print("ERROR:", e)
+        print("SERVER ERROR:", str(e))
 
         return JSONResponse(
             status_code=500,
@@ -265,8 +294,3 @@ async def analyze(file: UploadFile = File(...)):
                 "error": str(e)
             }
         )
-
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
