@@ -10,7 +10,7 @@ import statistics
 import requests
 
 from PIL import Image
-import google.generativeai as genai
+from google import genai
 
 # =========================================================
 # CONFIG
@@ -25,10 +25,7 @@ if not GEMINI_API_KEY:
 if not SERPAPI_KEY:
     raise Exception("Missing SERPAPI_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-
-vision_model = genai.GenerativeModel("gemini-1.5-flash")
-text_model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # =========================================================
 # FASTAPI
@@ -91,7 +88,6 @@ def clean_title(title: str) -> str:
         return "Ukendt objekt"
 
     title = title.strip()
-
     title = re.sub(r"\s+", " ", title)
 
     return title_case(title)
@@ -101,18 +97,14 @@ def clean_material(material: str) -> str:
     if not material:
         return ""
 
-    material = material.strip()
-
-    return title_case(material)
+    return title_case(material.strip())
 
 
 def clean_condition(condition: str) -> str:
     if not condition:
         return ""
 
-    condition = condition.strip()
-
-    return title_case(condition)
+    return title_case(condition.strip())
 
 
 def simplify_query(text: str) -> str:
@@ -159,7 +151,7 @@ def remove_outliers(prices):
     filtered = []
 
     for p in prices:
-        if median * 0.35 <= p <= median * 2.5:
+        if median * 0.5 <= p <= median * 1.8:
             filtered.append(p)
 
     return filtered
@@ -204,7 +196,11 @@ def serpapi_search(query: str):
         "num": 10,
     }
 
-    response = requests.get(url, params=params, timeout=20)
+    response = requests.get(
+        url,
+        params=params,
+        timeout=20,
+    )
 
     data = response.json()
 
@@ -266,17 +262,18 @@ Format:
 }
 
 Regler:
-- title skal være kort og præcis
+- title skal være realistisk og konkret
 - ingen fantasinavne
 - ingen pris
-- ingen gæt på designer
+- designer kun hvis meget sikker
 - material skal være kort
 - condition skal være realistisk
-- search_terms skal være 3-6 gode søgefraser
+- search_terms skal være gode søgninger til brugtmarked
 """
 
-        response = vision_model.generate_content(
-            [
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
                 prompt,
                 image,
             ]
@@ -289,20 +286,32 @@ Regler:
 
         vision = json.loads(raw)
 
-        title = clean_title(vision.get("title", "Ukendt objekt"))
-        material = clean_material(vision.get("material", ""))
-        condition = clean_condition(vision.get("condition", ""))
+        title = clean_title(
+            vision.get("title", "Ukendt objekt")
+        )
+
+        material = clean_material(
+            vision.get("material", "")
+        )
+
+        condition = clean_condition(
+            vision.get("condition", "")
+        )
 
         search_terms = vision.get("search_terms", [])
 
         queries = []
 
         queries.append(
-            simplify_query(f"{title} {material}")
+            simplify_query(
+                f"{title} {material}"
+            )
         )
 
         for s in search_terms:
-            queries.append(simplify_query(s))
+            queries.append(
+                simplify_query(s)
+            )
 
         queries = list(dict.fromkeys(queries))
 
