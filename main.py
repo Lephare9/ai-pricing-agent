@@ -41,7 +41,7 @@ print("GEMINI:", bool(GEMINI_API_KEY))
 print("SERPAPI:", bool(SERPAPI_KEY))
 
 # ---------------------------------------------------
-# GEMINI
+# GEMINI CLIENT
 # ---------------------------------------------------
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -53,11 +53,12 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 @app.get("/")
 async def root():
     return {
-        "status": "ok"
+        "status": "ok",
+        "version": "v6"
     }
 
 # ---------------------------------------------------
-# IMAGE OPTIMIZE
+# IMAGE OPTIMIZATION
 # ---------------------------------------------------
 
 def optimize_image(image_bytes):
@@ -106,7 +107,13 @@ Format:
   "search_term": "mest præcise DBA søgning"
 }
 
+Regler:
+- KUN ét objekt
+- Korte danske navne
+- search_term skal ligne noget folk søger på DBA
+
 Eksempel:
+
 {
   "title": "Rattan lænestol",
   "category": "Lænestole",
@@ -161,20 +168,20 @@ Eksempel:
     raise Exception(last_error)
 
 # ---------------------------------------------------
-# SERP SEARCH
+# SERPAPI SEARCH
 # ---------------------------------------------------
 
 async def serp_search(query):
 
     searches = [
 
-        f"site:dba.dk {query}",
+        f"{query} DBA",
 
-        f"site:facebook.com/marketplace {query}",
+        f"{query} Facebook Marketplace",
 
-        f"site:guloggratis.dk {query}",
+        f"{query} GulogGratis",
 
-        f"site:trendsales.dk {query}"
+        f"{query} Trendsales"
 
     ]
 
@@ -184,6 +191,7 @@ async def serp_search(query):
 
         for q in searches:
 
+            print("=" * 40)
             print(f"SEARCH: {q}")
 
             params = {
@@ -203,7 +211,35 @@ async def serp_search(query):
                     params=params
                 )
 
-                results.append(response.json())
+                data = response.json()
+
+                print("KEYS:", data.keys())
+
+                organic = data.get(
+                    "organic_results",
+                    []
+                )
+
+                print(
+                    "ORGANIC COUNT:",
+                    len(organic)
+                )
+
+                for r in organic[:3]:
+
+                    print("--- RESULT ---")
+
+                    print(
+                        "TITLE:",
+                        r.get("title")
+                    )
+
+                    print(
+                        "SNIPPET:",
+                        r.get("snippet")
+                    )
+
+                results.append(data)
 
             except Exception as e:
 
@@ -224,19 +260,30 @@ def extract_prices_from_results(data):
     # ORGANIC RESULTS
     for r in data.get("organic_results", []):
 
-        texts.append(str(r.get("title", "")))
+        texts.append(
+            str(r.get("title", ""))
+        )
 
-        texts.append(str(r.get("snippet", "")))
+        texts.append(
+            str(r.get("snippet", ""))
+        )
 
         if "rich_snippet" in r:
-            texts.append(json.dumps(r["rich_snippet"]))
+
+            texts.append(
+                json.dumps(r["rich_snippet"])
+            )
 
     # SHOPPING RESULTS
     for r in data.get("shopping_results", []):
 
-        texts.append(str(r.get("title", "")))
+        texts.append(
+            str(r.get("title", ""))
+        )
 
-        texts.append(str(r.get("price", "")))
+        texts.append(
+            str(r.get("price", ""))
+        )
 
     combined = "\n".join(texts)
 
@@ -267,7 +314,10 @@ def extract_prices_from_results(data):
 
     for pattern in patterns:
 
-        matches = re.findall(pattern, combined)
+        matches = re.findall(
+            pattern,
+            combined
+        )
 
         for raw in matches:
 
@@ -287,7 +337,9 @@ def extract_prices_from_results(data):
             except:
                 pass
 
-    prices = sorted(list(set(prices)))
+    prices = sorted(
+        list(set(prices))
+    )
 
     print("FOUND:", prices)
 
@@ -328,11 +380,17 @@ def build_price(prices):
     if not prices:
         return "Ukendt pris"
 
-    median = int(statistics.median(prices))
+    median = int(
+        statistics.median(prices)
+    )
 
-    low = int(round((median * 0.85) / 50) * 50)
+    low = int(
+        round((median * 0.85) / 50) * 50
+    )
 
-    high = int(round((median * 1.15) / 50) * 50)
+    high = int(
+        round((median * 1.15) / 50) * 50
+    )
 
     if low == high:
         return f"{low} kr"
@@ -340,11 +398,13 @@ def build_price(prices):
     return f"{low} - {high} kr"
 
 # ---------------------------------------------------
-# ANALYZE
+# MAIN ANALYZE ENDPOINT
 # ---------------------------------------------------
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -354,34 +414,61 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        optimized = optimize_image(image_bytes)
+        optimized = optimize_image(
+            image_bytes
+        )
 
         # GEMINI
-        vision = await analyze_image(optimized)
+        vision = await analyze_image(
+            optimized
+        )
 
         print("VISION:", vision)
 
-        title       = vision.get("title", "Ukendt objekt")
-        category    = vision.get("category", "")
-        condition   = vision.get("condition", "Brugt")
-        search_term = vision.get("search_term", title)
+        title = vision.get(
+            "title",
+            "Ukendt objekt"
+        )
+
+        category = vision.get(
+            "category",
+            ""
+        )
+
+        condition = vision.get(
+            "condition",
+            "Brugt"
+        )
+
+        search_term = vision.get(
+            "search_term",
+            title
+        )
 
         # SEARCH
-        results = await serp_search(search_term)
+        results = await serp_search(
+            search_term
+        )
 
         all_prices = []
 
         for result in results:
 
-            found = extract_prices_from_results(result)
+            found = extract_prices_from_results(
+                result
+            )
 
             all_prices.extend(found)
 
-        all_prices = sorted(list(set(all_prices)))
+        all_prices = sorted(
+            list(set(all_prices))
+        )
 
         print("ALL:", all_prices)
 
-        all_prices = clean_prices(all_prices)
+        all_prices = clean_prices(
+            all_prices
+        )
 
         return {
 
@@ -391,7 +478,9 @@ async def analyze(file: UploadFile = File(...)):
 
             "condition": condition,
 
-            "price": build_price(all_prices),
+            "price": build_price(
+                all_prices
+            ),
 
             "matches": len(all_prices)
 
