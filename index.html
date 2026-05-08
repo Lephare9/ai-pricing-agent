@@ -1,201 +1,267 @@
 <!DOCTYPE html>
-<html>
+<html lang="da">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+<title>AI Pris Scanner</title>
 
 <style>
-body {
-  font-family: -apple-system, BlinkMacSystemFont;
-  background: #f2f2f7;
-  margin: 0;
-  padding: 20px;
+
+*{
+    box-sizing:border-box;
 }
 
-/* container */
-.container {
-  max-width: 480px;
-  margin: auto;
+body{
+    margin:0;
+    padding:0;
+    background:#e9e9ee;
+    font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    display:flex;
+    justify-content:center;
 }
 
-/* title */
-h1 {
-  font-size: 28px;
-  font-weight: 700;
-  margin-bottom: 20px;
+.app{
+    width:100%;
+    max-width:390px;
+    padding:18px 14px 40px;
 }
 
-/* actions */
-.actions {
-  display: flex;
-  gap: 14px;
-  margin-bottom: 24px;
+.logo{
+    text-align:center;
+    font-size:20px;
+    font-weight:700;
+    margin-bottom:18px;
+    color:#111;
 }
 
-.btn {
-  flex: 1;
-  height: 130px;
-  border-radius: 24px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  font-weight: 600;
-  transition: 0.2s;
+.button-row{
+    display:flex;
+    gap:10px;
+    margin-bottom:18px;
 }
 
-/* iOS camera button */
-.camera {
-  background: radial-gradient(circle at 30% 30%, #3a3a3a, #000);
-  color: white;
-  box-shadow: inset 0 0 30px rgba(255,255,255,0.1),
-              0 10px 30px rgba(0,0,0,0.3);
+.btn{
+    flex:1;
+    height:46px;
+    border:none;
+    border-radius:14px;
+    background:#000;
+    color:#fff;
+    font-size:18px;
+    font-weight:600;
+    cursor:pointer;
 }
 
-/* iOS archive button */
-.gallery {
-  background: linear-gradient(180deg, #ffe066, #ffd43b);
-  box-shadow: 0 10px 30px rgba(255,212,59,0.5);
+.preview{
+    width:100%;
+    border-radius:22px;
+    overflow:hidden;
+    background:#ddd;
 }
 
-/* press effect */
-.btn:active {
-  transform: scale(0.96);
+.preview img{
+    width:100%;
+    display:block;
 }
 
-/* cards */
-.card {
-  background: rgba(255,255,255,0.7);
-  backdrop-filter: blur(20px);
-  border-radius: 24px;
-  padding: 18px;
-  margin-bottom: 16px;
+.loading{
+    display:none;
+    text-align:center;
+    font-size:18px;
+    font-weight:700;
+    color:#555;
+    margin-top:18px;
 }
 
-/* image */
-img {
-  width: 100%;
-  border-radius: 20px;
+.card{
+    display:none;
+    background:#f5f5f5;
+    border-radius:24px;
+    padding:20px;
+    margin-top:16px;
 }
 
-/* text */
-.name {
-  font-size: 22px;
-  font-weight: 700;
+.title{
+    font-size:16px;
+    font-weight:700;
+    color:#111;
+    margin-bottom:4px;
 }
 
-.meta {
-  color: #666;
-  margin-top: 4px;
+.material{
+    font-size:15px;
+    color:#666;
+    margin-bottom:14px;
 }
 
-/* price */
-.price {
-  font-size: 34px;
-  font-weight: 800;
-  color: #1e8e3e;
+.price{
+    font-size:28px;
+    font-weight:800;
+    color:#000;
+    margin-bottom:12px;
 }
 
-/* loading */
-.loading {
-  text-align: center;
-  padding: 20px;
-  color: #666;
+.condition{
+    font-size:16px;
+    font-weight:600;
+    color:#111;
+    margin-bottom:8px;
 }
+
+.hits{
+    font-size:15px;
+    color:#888;
+}
+
+.hidden{
+    display:none;
+}
+
 </style>
 </head>
 
 <body>
 
-<div class="container">
+<div class="app">
 
-<h1>AI Pris Scanner</h1>
+    <div class="logo">AI Pris Scanner</div>
 
-<div class="actions">
-  <div class="btn camera" onclick="openCamera()">
-    📷
-    <div>Tag foto</div>
-  </div>
+    <div class="button-row">
+        <button class="btn" onclick="cameraInput.click()">Tag foto</button>
+        <button class="btn" onclick="fileInput.click()">Arkiv</button>
+    </div>
 
-  <div class="btn gallery" onclick="openFile()">
-    📁
-    <div>Arkiv</div>
-  </div>
-</div>
+    <input
+        type="file"
+        id="cameraInput"
+        accept="image/*"
+        capture="environment"
+        class="hidden"
+    >
 
-<input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
-<input type="file" id="fileInput" accept="image/*" hidden>
+    <input
+        type="file"
+        id="fileInput"
+        accept="image/*"
+        class="hidden"
+    >
 
-<div id="result"></div>
+    <div class="preview">
+        <img id="previewImage" src="" style="display:none;">
+    </div>
+
+    <div id="loadingText" class="loading">
+        Analyserer...
+    </div>
+
+    <div class="card" id="resultCard">
+
+        <div class="title" id="title"></div>
+
+        <div class="material" id="material"></div>
+
+        <div class="price" id="price"></div>
+
+        <div class="condition" id="condition"></div>
+
+        <div class="hits" id="hits"></div>
+
+    </div>
 
 </div>
 
 <script>
 
-const API_URL = "https://ai-pricing-agent-production.up.railway.app/analyze";
+const API_URL =
+"https://ai-pricing-agent-production.up.railway.app/analyze";
 
-function openCamera() {
-  cameraInput.click();
-}
+const previewImage =
+document.getElementById("previewImage");
 
-function openFile() {
-  fileInput.click();
-}
+const resultCard =
+document.getElementById("resultCard");
 
-cameraInput.onchange = handleFile;
-fileInput.onchange = handleFile;
+const loadingText =
+document.getElementById("loadingText");
 
-async function handleFile(e) {
+document
+.getElementById("cameraInput")
+.addEventListener("change", handleFile);
 
-  const file = e.target.files[0];
-  if (!file) return;
+document
+.getElementById("fileInput")
+.addEventListener("change", handleFile);
 
-  const preview = URL.createObjectURL(file);
-  const result = document.getElementById("result");
+async function handleFile(e){
 
-  result.innerHTML = `
-    <div class="card">
-      <img src="${preview}">
-      <div class="loading">Analyserer...</div>
-    </div>
-  `;
+    const file = e.target.files[0];
 
-  const formData = new FormData();
-  formData.append("file", file);
+    if(!file) return;
 
-  try {
-    const res = await fetch(API_URL, {
-      method: "POST",
-      body: formData
-    });
+    previewImage.src = URL.createObjectURL(file);
 
-    const data = await res.json();
+    previewImage.style.display = "block";
 
-    const [name, brand] = data.description.split("\n");
+    resultCard.style.display = "none";
 
-    result.innerHTML = `
-      <div class="card">
-        <img src="${preview}">
-      </div>
+    loadingText.style.display = "block";
 
-      <div class="card">
-        <div class="name">${name}</div>
-        <div class="meta">${brand}</div>
-      </div>
+    const formData = new FormData();
 
-      <div class="card">
-        <div class="price">${data.price_range}</div>
-        <div class="meta">Sikkerhed: ${data.confidence}%</div>
-      </div>
-    `;
+    formData.append("file", file);
 
-  } catch {
-    result.innerHTML = `
-      <div class="card">
-        <img src="${preview}">
-        <div class="meta">⚠️ Fejl – prøv igen</div>
-      </div>
-    `;
-  }
+    try{
+
+        const response = await fetch(API_URL,{
+            method:"POST",
+            body:formData
+        });
+
+        const data = await response.json();
+
+        loadingText.style.display = "none";
+
+        document.getElementById("title").innerText =
+            data.title || "Ukendt";
+
+        document.getElementById("material").innerText =
+            data.material || "";
+
+        document.getElementById("price").innerText =
+            data.price_range || "Ukendt pris";
+
+        document.getElementById("condition").innerText =
+            data.condition || "Ukendt stand";
+
+        document.getElementById("hits").innerText =
+            `${data.found_prices || 0} fundne priser`;
+
+        resultCard.style.display = "block";
+
+    }catch(error){
+
+        loadingText.style.display = "none";
+
+        document.getElementById("title").innerText =
+            "Fejl";
+
+        document.getElementById("material").innerText =
+            "";
+
+        document.getElementById("price").innerText =
+            "Ukendt pris";
+
+        document.getElementById("condition").innerText =
+            "Ukendt stand";
+
+        document.getElementById("hits").innerText =
+            "0 fundne priser";
+
+        resultCard.style.display = "block";
+
+        console.error(error);
+    }
 }
 
 </script>
