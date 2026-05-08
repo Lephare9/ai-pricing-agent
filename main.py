@@ -36,10 +36,10 @@ app.add_middleware(
 # ---------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+SERPAPI_KEY    = os.getenv("SERPAPI_KEY")
 
-print("GEMINI:", bool(GEMINI_API_KEY))
-print("SERPAPI:", bool(SERPAPI_KEY))
+print("GEMINI KEY:", bool(GEMINI_API_KEY))
+print("SERPAPI KEY:", bool(SERPAPI_KEY))
 
 # ---------------------------------------------------
 # GEMINI CLIENT
@@ -48,47 +48,25 @@ print("SERPAPI:", bool(SERPAPI_KEY))
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------
-# REGEX
-# ---------------------------------------------------
-
-PRICE_REGEX = r"(\d{2,6})\s?(kr|dkk|,-)?"
-
-# ---------------------------------------------------
 # ROOT
 # ---------------------------------------------------
 
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "v4"}
 
 # ---------------------------------------------------
 # IMAGE OPTIMIZATION
 # ---------------------------------------------------
 
 def optimize_image(image_bytes):
-
     image = Image.open(io.BytesIO(image_bytes))
-
     image = image.convert("RGB")
-
-    max_size = 1400
-
-    image.thumbnail((max_size, max_size))
-
+    image.thumbnail((1200, 1200))
     output = io.BytesIO()
-
-    image.save(
-        output,
-        format="JPEG",
-        quality=72,
-        optimize=True
-    )
-
+    image.save(output, format="JPEG", quality=72, optimize=True)
     optimized = output.getvalue()
-
-    print("ORIGINAL SIZE:", len(image_bytes))
-    print("OPTIMIZED SIZE:", len(optimized))
-
+    print(f"BILLEDE: {len(image_bytes)} → {len(optimized)} bytes")
     return optimized
 
 # ---------------------------------------------------
@@ -97,49 +75,44 @@ def optimize_image(image_bytes):
 
 async def analyze_image(image_bytes):
 
-    print("=" * 50)
-    print("START GEMINI ANALYZE")
-    print("=" * 50)
-
-    print("FINAL SIZE SENT TO GEMINI:", len(image_bytes))
+    print("=" * 40)
+    print("GEMINI START")
+    print("=" * 40)
 
     prompt = """
-Du analyserer brugte møbler i Danmark.
+Du analyserer brugte genstande til salg i en genbrugsbutik i Danmark.
 
-Returnér KUN valid JSON.
-
-Format:
+Returnér KUN valid JSON i dette format:
 
 {
-  "title": "...",
-  "category": "...",
-  "condition": "...",
+  "title": "Kort dansk navn på genstanden (2-4 ord)",
+  "category": "møbel / tøj / elektronik / køkken / kunst / legetøj / accessories / andet",
+  "condition": "God stand / Brugt stand / Slidt stand",
   "search_terms": [
-    "...",
-    "...",
-    "..."
+    "præcist søgeord 1",
+    "præcist søgeord 2",
+    "præcist søgeord 3"
   ]
 }
 
 Regler:
-- Alt skal være dansk
-- Ingen engelske ord
-- Fokus på DBA/Facebook Marketplace
-- Korte præcise søgninger
+- Alt på dansk
+- search_terms: korte, præcise søgeord som en dansker ville søge på DBA.dk
+- Ingen engelske ord i search_terms
+- Eksempel: ["rattan lænestol", "flettestol", "kurvestol"]
 """
 
     models = [
         "gemini-2.5-flash",
-        "gemini-2.5-flash-lite"
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
     ]
 
     last_error = None
 
     for model_name in models:
-
         try:
-
-            print(f"TRYING MODEL: {model_name}")
+            print(f"PRØVER MODEL: {model_name}")
 
             response = client.models.generate_content(
                 model=model_name,
@@ -152,84 +125,106 @@ Regler:
                 ]
             )
 
-            print(f"SUCCESS WITH: {model_name}")
-
             text = response.text.strip()
+            text = re.sub(r"```json|```", "", text).strip()
 
-            text = text.replace("```json", "")
-            text = text.replace("```", "")
-
-            print("RAW GEMINI:")
+            print("GEMINI RAW:")
             print(text)
 
             return json.loads(text)
 
         except Exception as e:
-
-            print("=" * 50)
-            print(f"MODEL FAILED: {model_name}")
-            print(str(e))
-            print("=" * 50)
-
+            print(f"MODEL FEJL ({model_name}): {e}")
             last_error = e
-
             continue
 
-    raise Exception(f"ALL GEMINI MODELS FAILED: {last_error}")
+    raise Exception(f"ALLE GEMINI MODELLER FEJLEDE: {last_error}")
 
 # ---------------------------------------------------
-# SERPAPI SEARCH
+# SERPAPI SEARCH — SPECIFIK
 # ---------------------------------------------------
 
-async def serp_search(query):
+async def serp_search(query, search_type="dba"):
 
-    print("SEARCH:", query)
+    print(f"SØGER [{search_type}]: {query}")
 
-    url = "https://serpapi.com/search.json"
+    url = "[serpapi.com](https://serpapi.com/search.json)"
+
+    if search_type == "dba":
+        # Søg direkte på DBA for præcise priser
+        q = f"site:dba.dk {query}"
+    elif search_type == "trendsales":
+        q = f"site:trendsales.dk {query}"
+    else:
+        q = f"{query} pris til salg"
 
     params = {
-        "q": query,
-        "api_key": SERPAPI_KEY,
-        "hl": "da",
-        "gl": "dk",
-        "google_domain": "google.dk"
+        "q":             q,
+        "api_key":       SERPAPI_KEY,
+        "hl":            "da",
+        "gl":            "dk",
+        "google_domain": "google.dk",
+        "num":           10
     }
 
-    async with httpx.AsyncClient(timeout=20) as client_http:
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            response = await http.get(url, params=params)
 
-        response = await client_http.get(
-            url,
-            params=params
-        )
+        data = response.json()
+        return data
 
-    data = response.json()
-
-    return data
+    except Exception as e:
+        print(f"SØGNING FEJL: {e}")
+        return {}
 
 # ---------------------------------------------------
-# EXTRACT PRICES
+# EXTRACT PRICES — FORBEDRET
 # ---------------------------------------------------
 
-def extract_prices(data):
-
-    text = str(data).lower()
-
-    matches = re.findall(PRICE_REGEX, text)
+def extract_prices_from_results(data):
+    """
+    Parser kun organic_results og shopping_results
+    for at undgå støj fra resten af JSON.
+    Håndterer format: 1.500 kr / 1500 kr / 1500,- / kr 1500
+    """
 
     prices = []
 
-    for match in matches:
+    # Kombiner titler og snippets fra organiske resultater
+    sources = []
 
-        try:
+    for r in data.get("organic_results", []):
+        sources.append(r.get("title", ""))
+        sources.append(r.get("snippet", ""))
+        sources.append(r.get("price", ""))
 
-            price = int(match[0])
+    for r in data.get("shopping_results", []):
+        sources.append(r.get("title", ""))
+        sources.append(r.get("price", ""))
 
-            if 50 <= price <= 100000:
-                prices.append(price)
+    combined = " ".join(sources).lower()
 
-        except:
-            pass
+    # Match: 1.500 kr / 1500 kr / 1500,- / kr 1.500
+    # Fjerner punktum som tusindtalsseparator
+    patterns = [
+        r"(\d{1,3}(?:\.\d{3})+)\s*(?:kr|dkk|,-)",   # 1.500 kr
+        r"(\d{3,6})\s*(?:kr|dkk|,-)",                  # 1500 kr
+        r"(?:kr|dkk)\s*(\d{1,3}(?:\.\d{3})+)",         # kr 1.500
+        r"(?:kr|dkk)\s*(\d{3,6})",                      # kr 1500
+    ]
 
+    for pattern in patterns:
+        for match in re.finditer(pattern, combined):
+            raw = match.group(1).replace(".", "")
+            try:
+                price = int(raw)
+                if 50 <= price <= 50000:
+                    prices.append(price)
+            except:
+                pass
+
+    print(f"  → FANDT {len(prices)} priser: {sorted(set(prices))[:15]}")
     return prices
 
 # ---------------------------------------------------
@@ -237,39 +232,37 @@ def extract_prices(data):
 # ---------------------------------------------------
 
 def clean_prices(prices):
-
-    if len(prices) < 3:
+    if len(prices) < 2:
         return prices
 
-    median = statistics.median(prices)
+    med = statistics.median(prices)
 
-    filtered = []
-
-    for p in prices:
-
-        if median * 0.4 <= p <= median * 2.5:
-            filtered.append(p)
+    filtered = [
+        p for p in prices
+        if med * 0.35 <= p <= med * 3.0
+    ]
 
     return filtered
 
 # ---------------------------------------------------
-# BUILD RANGE
+# BUILD PRICE RANGE
 # ---------------------------------------------------
 
 def build_price(prices):
-
     if not prices:
         return "Ukendt pris"
 
-    median = int(statistics.median(prices))
+    med   = int(statistics.median(prices))
+    low   = int(round((med * 0.85) / 50) * 50)
+    high  = int(round((med * 1.15) / 50) * 50)
 
-    low = int(round((median * 0.9) / 50) * 50)
-    high = int(round((median * 1.1) / 50) * 50)
+    if low == high:
+        return f"{low} kr"
 
-    return f"{low} - {high} kr"
+    return f"{low} – {high} kr"
 
 # ---------------------------------------------------
-# ANALYZE
+# MAIN ENDPOINT
 # ---------------------------------------------------
 
 @app.post("/analyze")
@@ -277,112 +270,71 @@ async def analyze(file: UploadFile = File(...)):
 
     try:
 
-        print("=" * 50)
-        print("START ANALYZE")
-        print("=" * 50)
+        print("=" * 40)
+        print("ANALYZE START")
+        print("=" * 40)
 
         image_bytes = await file.read()
+        optimized   = optimize_image(image_bytes)
 
-        # ----------------------------------------
-        # OPTIMIZE IMAGE
-        # ----------------------------------------
-
-        optimized = optimize_image(image_bytes)
-
-        # ----------------------------------------
-        # GEMINI ANALYSIS
-        # ----------------------------------------
-
+        # Gemini vision
         vision = await analyze_image(optimized)
 
-        print("VISION RESULT:")
+        print("VISION:")
         print(vision)
 
-        title = vision.get("title", "Ukendt objekt")
-        category = vision.get("category", "")
-        condition = vision.get(
-            "condition",
-            "Brugt stand"
-        )
+        title       = vision.get("title",       "Ukendt objekt")
+        category    = vision.get("category",    "")
+        condition   = vision.get("condition",   "Brugt stand")
+        search_terms = vision.get("search_terms", [title])
 
-        search_terms = vision.get(
-            "search_terms",
-            []
-        )
+        print("SØGEORD:", search_terms)
 
-        print("SEARCH TERMS:")
-        print(search_terms)
-
-        # ----------------------------------------
-        # PARALLEL SEARCHES
-        # ----------------------------------------
-
+        # Parallelle søgninger
         tasks = []
 
-        for q in search_terms:
+        for term in search_terms[:3]:
+            tasks.append(serp_search(term, "dba"))
 
-            query = f"{q} brugt dba facebook marketplace"
+        # Tilføj generel søgning på første term
+        tasks.append(serp_search(search_terms[0], "general"))
 
-            tasks.append(
-                serp_search(query)
-            )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        results = await asyncio.gather(*tasks)
+        # Udtræk priser
+        all_prices = []
 
-        print("SEARCH RESULTS:", len(results))
+        for r in results:
+            if isinstance(r, Exception):
+                print("SØGNING FEJL:", r)
+                continue
+            found = extract_prices_from_results(r)
+            all_prices.extend(found)
 
-        # ----------------------------------------
-        # PRICE EXTRACTION
-        # ----------------------------------------
+        all_prices = list(set(all_prices))
+        print("ALLE PRISER:", sorted(all_prices))
 
-        prices = []
-
-        for result in results:
-
-            found = extract_prices(result)
-
-            print("FOUND:", found[:20])
-
-            prices.extend(found)
-
-        prices = list(set(prices))
-
-        print("ALL PRICES:", prices)
-
-        # ----------------------------------------
-        # FILTER
-        # ----------------------------------------
-
-        prices = clean_prices(prices)
-
-        print("FILTERED:", prices)
-
-        # ----------------------------------------
-        # RESPONSE
-        # ----------------------------------------
+        all_prices = clean_prices(all_prices)
+        print("RENSEDE PRISER:", sorted(all_prices))
 
         return {
-            "title": title,
-            "category": category,
+            "title":     title,
+            "category":  category,
             "condition": condition,
-            "price": build_price(prices),
-            "matches": len(prices)
+            "price":     build_price(all_prices),
+            "matches":   len(all_prices)
         }
 
     except Exception as e:
 
-        print("=" * 50)
-        print("FULL ERROR")
-        print("=" * 50)
-
+        print("FEJL:")
         print(str(e))
-
         traceback.print_exc()
 
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "error": str(e)
+                "error":   str(e)
             }
         )
