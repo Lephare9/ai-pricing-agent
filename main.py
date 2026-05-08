@@ -63,7 +63,7 @@ app.add_middleware(
 
 
 # =========================================================
-# HELPERS
+# DANISH TRANSLATIONS
 # =========================================================
 
 DANISH_MAP = {
@@ -82,8 +82,74 @@ DANISH_MAP = {
     "furniture": "møbel",
     "rattan": "rattan",
     "wicker": "flet",
+    "crate": "trækasse",
+    "box": "kasse",
+    "storage": "opbevaring",
 }
 
+
+STOPWORDS = {
+    "wood",
+    "brown",
+    "black",
+    "white",
+    "grey",
+    "gray",
+    "hardwood",
+    "display",
+    "device",
+    "panel",
+    "flat",
+    "furniture",
+    "metal",
+    "plastic",
+    "silver",
+    "iron",
+    "modern",
+    "design",
+    "home",
+    "interior",
+    "plank",
+    "stain",
+    "hardtræ",
+    "screen",
+    "monitor",
+}
+
+
+VALID_DANISH_WORDS = {
+    "stol",
+    "lænestol",
+    "bord",
+    "skab",
+    "kommode",
+    "lampe",
+    "hylde",
+    "reol",
+    "trækasse",
+    "vinkasse",
+    "trækiste",
+    "sofa",
+    "skammel",
+    "bænk",
+    "rattan",
+    "flet",
+    "træ",
+    "glas",
+    "metal",
+    "plast",
+    "teak",
+    "teaktræ",
+    "eg",
+    "opbevaring",
+    "kasse",
+    "kiste",
+}
+
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 def clean_text(text: str) -> str:
 
@@ -230,14 +296,43 @@ def vision_web_detection(image_bytes):
 
                 cleaned = clean_text(entity.description)
 
-                if cleaned:
+                if not cleaned:
+                    continue
+
+                bad_words = [
+                    "display",
+                    "device",
+                    "panel",
+                    "flat",
+                    "screen",
+                    "monitor",
+                    "plastic",
+                    "silver",
+                    "grey",
+                    "gray",
+                    "brown",
+                    "black",
+                    "white",
+                    "wood",
+                    "hardwood",
+                ]
+
+                skip = False
+
+                for bad in bad_words:
+
+                    if bad in cleaned:
+                        skip = True
+                        break
+
+                if not skip:
                     results.append(cleaned)
 
     return results
 
 
 # =========================================================
-# SERPAPI GOOGLE LENS
+# SERPAPI
 # =========================================================
 
 def serpapi_google_lens(image_base64):
@@ -347,10 +442,7 @@ def build_title(labels, web_entities, visual_titles):
     combined.extend(web_entities)
     combined.extend(visual_titles)
 
-    combined = [x for x in combined if len(x) > 2]
-
-    if not combined:
-        return "Ukendt møbel"
+    combined = [clean_text(x) for x in combined]
 
     counts = {}
 
@@ -360,18 +452,50 @@ def build_title(labels, web_entities, visual_titles):
 
         for word in words:
 
-            if len(word) < 4:
+            word = word.strip().lower()
+
+            if len(word) < 3:
+                continue
+
+            if word in STOPWORDS:
+                continue
+
+            if not re.match(r"^[a-zA-ZæøåÆØÅ]+$", word):
                 continue
 
             counts[word] = counts.get(word, 0) + 1
 
-    sorted_words = sorted(
-        counts.items(),
+    if not counts:
+        return "Ukendt møbel"
+
+    prioritized = []
+
+    for word, score in counts.items():
+
+        boost = 0
+
+        if word in VALID_DANISH_WORDS:
+            boost += 10
+
+        prioritized.append(
+            (word, score + boost)
+        )
+
+    prioritized = sorted(
+        prioritized,
         key=lambda x: x[1],
         reverse=True
     )
 
-    top_words = [x[0] for x in sorted_words[:4]]
+    top_words = []
+
+    for word, score in prioritized:
+
+        if word not in top_words:
+            top_words.append(word)
+
+        if len(top_words) >= 3:
+            break
 
     final_title = " ".join(top_words)
 
