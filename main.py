@@ -9,7 +9,6 @@ import tempfile
 import json
 import os
 import re
-import base64
 
 app = FastAPI()
 
@@ -22,13 +21,11 @@ app.add_middleware(
 )
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-IMGBB_KEY = os.getenv("IMGBB_KEY")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
-
-# -----------------------------
-# GOOGLE VISION AUTH
-# -----------------------------
+# ---------------------------------------------------
+# GOOGLE VISION INIT
+# ---------------------------------------------------
 
 vision_client = None
 
@@ -45,6 +42,7 @@ try:
         ) as f:
 
             json.dump(creds_dict, f)
+
             creds_path = f.name
 
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
@@ -54,15 +52,17 @@ try:
         print("GOOGLE VISION READY")
 
     else:
+
         print("GOOGLE_CREDS_JSON missing")
 
 except Exception as e:
+
     print("VISION INIT ERROR:", str(e))
 
 
-# -----------------------------
+# ---------------------------------------------------
 # HELPERS
-# -----------------------------
+# ---------------------------------------------------
 
 def clean_text(text):
 
@@ -74,19 +74,35 @@ def clean_text(text):
     blacklist = [
         "chair",
         "table",
-        "wood",
         "furniture",
-        "metal",
-        "display device",
-        "flat panel display",
-        "plastic",
-        "silver",
-        "grey",
-        "black",
-        "interior design",
-        "home decor",
-        "product",
+        "wood",
+        "hardwood",
+        "interior",
+        "design",
         "room",
+        "floor",
+        "armrest",
+        "stain",
+        "yellow",
+        "brown",
+        "black",
+        "grey",
+        "white",
+        "display",
+        "device",
+        "electronics",
+        "metal",
+        "plastic",
+        "product",
+        "font",
+        "material",
+        "property",
+        "rectangle",
+        "parallel",
+        "composite material",
+        "wood stain",
+        "leather",
+        "hard",
     ]
 
     for word in blacklist:
@@ -102,7 +118,10 @@ def extract_prices(text):
 
     prices = []
 
-    matches = re.findall(r'(\d{2,5})\s?(?:kr|,-)', text.lower())
+    matches = re.findall(
+        r'(\d{2,5})\s?(?:kr|,-)',
+        text.lower()
+    )
 
     for match in matches:
 
@@ -110,7 +129,7 @@ def extract_prices(text):
 
             price = int(match)
 
-            if 50 <= price <= 50000:
+            if 100 <= price <= 50000:
                 prices.append(price)
 
         except:
@@ -119,45 +138,38 @@ def extract_prices(text):
     return prices
 
 
-def upload_to_imgbb(image_bytes):
-
-    if not IMGBB_KEY:
-        raise Exception("IMGBB_KEY mangler")
-
-    encoded = base64.b64encode(image_bytes).decode()
-
-    response = requests.post(
-        "https://api.imgbb.com/1/upload",
-        data={
-            "key": IMGBB_KEY,
-            "image": encoded
-        },
-        timeout=30
-    )
-
-    data = response.json()
-
-    return data["data"]["url"]
-
+# ---------------------------------------------------
+# GOOGLE VISION SEARCH
+# ---------------------------------------------------
 
 def google_vision_search(image_bytes):
 
     if not vision_client:
-        return []
+        return [], []
 
     image = vision.Image(content=image_bytes)
 
     response = vision_client.web_detection(image=image)
 
-    results = []
+    web = response.web_detection
+
+    queries = []
+    urls = []
 
     try:
 
-        web = response.web_detection
+        # BEST GUESS LABELS
+        for label in web.best_guess_labels:
 
-        for page in web.pages_with_matching_images[:10]:
+            text = clean_text(label.label)
 
-            url = page.url.lower()
+            if text:
+                queries.append(text)
+
+        # VISUALLY SIMILAR URLS
+        for img in web.visually_similar_images[:20]:
+
+            url = img.url.lower()
 
             if (
                 ".dk" in url
@@ -165,13 +177,18 @@ def google_vision_search(image_bytes):
                 or "facebook.com" in url
                 or "guloggratis.dk" in url
             ):
-                results.append(url)
+                urls.append(url)
 
     except Exception as e:
+
         print("VISION SEARCH ERROR:", str(e))
 
-    return results
+    return queries, urls
 
+
+# ---------------------------------------------------
+# SERPAPI SEARCH
+# ---------------------------------------------------
 
 def serpapi_search(query):
 
@@ -185,10 +202,15 @@ def serpapi_search(query):
         "q": query,
         "hl": "da",
         "gl": "dk",
+        "num": 20,
         "api_key": SERPAPI_KEY,
     }
 
-    response = requests.get(url, params=params, timeout=30)
+    response = requests.get(
+        url,
+        params=params,
+        timeout=30
+    )
 
     data = response.json()
 
@@ -196,20 +218,22 @@ def serpapi_search(query):
 
     for result in data.get("organic_results", []):
 
-        snippet = (
-            result.get("snippet", "")
+        text = (
+            result.get("title", "")
             + " "
-            + result.get("title", "")
+            + result.get("snippet", "")
         )
 
-        prices.extend(extract_prices(snippet))
+        found = extract_prices(text)
+
+        prices.extend(found)
 
     return prices
 
 
-# -----------------------------
-# MAIN ANALYZE
-# -----------------------------
+# ---------------------------------------------------
+# ANALYZE
+# ---------------------------------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
@@ -218,13 +242,20 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        # -----------------------------
-        # GOOGLE VISION LABELS
-        # -----------------------------
+        # ---------------------------------------------
+        # GOOGLE VISION
+        # ---------------------------------------------
+
+        queries, urls = google_vision_search(image_bytes)
+
+        print("VISION QUERIES:", queries)
+        print("MATCH URLS:", urls)
+
+        # ---------------------------------------------
+        # FALLBACK LABELS
+        # ---------------------------------------------
 
         labels = []
-
-        title = "Ukendt møbel"
 
         if vision_client:
 
@@ -233,68 +264,82 @@ async def analyze(file: UploadFile = File(...)):
             response = vision_client.label_detection(image=image)
 
             labels = [
-                clean_text(label.description)
-                for label in response.label_annotations[:8]
+                clean_text(x.description)
+                for x in response.label_annotations[:10]
             ]
 
             labels = [x for x in labels if x]
 
-            print("LABELS:", labels)
+        print("LABELS:", labels)
 
-        # -----------------------------
-        # WEB DETECTION
-        # -----------------------------
+        # ---------------------------------------------
+        # BUILD SEARCH QUERY
+        # ---------------------------------------------
 
-        urls = google_vision_search(image_bytes)
+        if queries:
 
-        print("MATCH URLS:", urls)
+            search_query = " ".join(queries[:3])
 
-        # -----------------------------
-        # BUILD DANISH SEARCH
-        # -----------------------------
+        elif labels:
 
-        search_query = " ".join(labels[:4])
+            search_query = " ".join(labels[:3])
 
-        if not search_query:
-            search_query = "dansk møbel"
+        else:
 
-        search_query += " brugt dba facebook marketplace"
+            search_query = "dansk vintage møbel"
+
+        search_query += " dba facebook marketplace"
 
         print("SEARCH:", search_query)
 
-        # -----------------------------
-        # SERPAPI
-        # -----------------------------
+        # ---------------------------------------------
+        # SEARCH PRICES
+        # ---------------------------------------------
 
         prices = serpapi_search(search_query)
 
         print("RAW PRICES:", prices)
 
-        # -----------------------------
-        # FALLBACK FROM URL TEXT
-        # -----------------------------
+        # ---------------------------------------------
+        # ALSO EXTRACT FROM URLS
+        # ---------------------------------------------
 
         for url in urls:
 
             prices.extend(extract_prices(url))
 
-        # -----------------------------
+        # ---------------------------------------------
         # CLEAN PRICES
-        # -----------------------------
+        # ---------------------------------------------
 
         prices = [
-            p for p in prices
-            if 100 <= p <= 25000
+            x for x in prices
+            if 100 <= x <= 50000
         ]
 
         print("FILTERED:", prices)
+
+        # remove extreme outliers
+
+        if len(prices) >= 5:
+
+            median = statistics.median(prices)
+
+            prices = [
+                p for p in prices
+                if median * 0.35 <= p <= median * 2.5
+            ]
+
+        # ---------------------------------------------
+        # PRICE RESULT
+        # ---------------------------------------------
 
         if len(prices) >= 3:
 
             median_price = int(statistics.median(prices))
 
-            low = int(median_price * 0.8)
-            high = int(median_price * 1.2)
+            low = int(median_price * 0.85)
+            high = int(median_price * 1.15)
 
             price_text = f"{low} - {high} kr"
 
@@ -302,12 +347,23 @@ async def analyze(file: UploadFile = File(...)):
 
             price_text = "Ukendt pris"
 
-        # -----------------------------
+        # ---------------------------------------------
         # TITLE
-        # -----------------------------
+        # ---------------------------------------------
 
-        if labels:
+        title = "Ukendt møbel"
+
+        if queries:
+
+            title = queries[0].title()
+
+        elif labels:
+
             title = " ".join(labels[:3]).title()
+
+        # ---------------------------------------------
+        # RETURN
+        # ---------------------------------------------
 
         return {
             "title": title,
@@ -332,6 +388,13 @@ async def analyze(file: UploadFile = File(...)):
         }
 
 
+# ---------------------------------------------------
+# ROOT
+# ---------------------------------------------------
+
 @app.get("/")
 def root():
-    return {"status": "running"}
+
+    return {
+        "status": "running"
+    }
