@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-requests
 python-multipart
 pillow
-google-generativeai>=0.8.5
-openai>=1.30.0
+requests
+google-cloud-vision
