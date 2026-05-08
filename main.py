@@ -3,15 +3,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from google import genai
+from google.genai import types
 
-import base64
-import os
-import re
-import json
+from PIL import Image
+
 import asyncio
 import statistics
 import traceback
 import httpx
+import base64
+import json
+import re
+import os
+import io
 
 # ---------------------------------------------------
 # APP
@@ -44,10 +48,10 @@ print("SERPAPI:", bool(SERPAPI_KEY))
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------
-# PRICE REGEX
+# REGEX
 # ---------------------------------------------------
 
-PRICE_REGEX = r"(\d{2,6})\s?(kr|dkk)?"
+PRICE_REGEX = r"(\d{2,6})\s?(kr|dkk|,-)?"
 
 # ---------------------------------------------------
 # ROOT
@@ -58,61 +62,120 @@ async def root():
     return {"status": "ok"}
 
 # ---------------------------------------------------
-# GEMINI IMAGE ANALYSIS
+# IMAGE OPTIMIZATION
+# ---------------------------------------------------
+
+def optimize_image(image_bytes):
+
+    image = Image.open(io.BytesIO(image_bytes))
+
+    image = image.convert("RGB")
+
+    max_size = 1400
+
+    image.thumbnail((max_size, max_size))
+
+    output = io.BytesIO()
+
+    image.save(
+        output,
+        format="JPEG",
+        quality=72,
+        optimize=True
+    )
+
+    optimized = output.getvalue()
+
+    print("ORIGINAL SIZE:", len(image_bytes))
+    print("OPTIMIZED SIZE:", len(optimized))
+
+    return optimized
+
+# ---------------------------------------------------
+# GEMINI ANALYZE
 # ---------------------------------------------------
 
 async def analyze_image(image_bytes):
 
-    image_b64 = base64.b64encode(image_bytes).decode()
+    print("=" * 50)
+    print("START GEMINI ANALYZE")
+    print("=" * 50)
+
+    print("FINAL SIZE SENT TO GEMINI:", len(image_bytes))
 
     prompt = """
-Du er ekspert i danske brugtmøbler.
+Du analyserer brugte møbler i Danmark.
 
-Analyser billedet.
-
-Svar KUN som valid JSON.
-
-Regler:
-- ALT skal være dansk
-- ingen engelske ord
-- korte søgninger
-- fokus på DBA og Facebook Marketplace
-- beskriv typen af møbel korrekt
+Returnér KUN valid JSON.
 
 Format:
 
 {
-  "titel": "kort dansk titel",
-  "kategori": "møbelkategori",
-  "queries": [
-    "søgning 1",
-    "søgning 2",
-    "søgning 3"
+  "title": "...",
+  "category": "...",
+  "condition": "...",
+  "search_terms": [
+    "...",
+    "...",
+    "..."
   ]
 }
+
+Regler:
+- Alt skal være dansk
+- Ingen engelske ord
+- Fokus på DBA/Facebook Marketplace
+- Korte præcise søgninger
 """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=[
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": prompt
-                    },
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": image_b64
-                        }
-                    }
-                ]
-            }
-        ]
-    )
+    models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+    ]
 
-    return response.text
+    last_error = None
+
+    for model_name in models:
+
+        try:
+
+            print(f"TRYING MODEL: {model_name}")
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type="image/jpeg"
+                    )
+                ]
+            )
+
+            print(f"SUCCESS WITH: {model_name}")
+
+            text = response.text.strip()
+
+            text = text.replace("```json", "")
+            text = text.replace("```", "")
+
+            print("RAW GEMINI:")
+            print(text)
+
+            return json.loads(text)
+
+        except Exception as e:
+
+            print("=" * 50)
+            print(f"MODEL FAILED: {model_name}")
+            print(str(e))
+            print("=" * 50)
+
+            last_error = e
+
+            continue
+
+    raise Exception(f"ALL GEMINI MODELS FAILED: {last_error}")
 
 # ---------------------------------------------------
 # SERPAPI SEARCH
@@ -132,9 +195,9 @@ async def serp_search(query):
         "google_domain": "google.dk"
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=20) as client_http:
 
-        response = await client.get(
+        response = await client_http.get(
             url,
             params=params
         )
@@ -170,7 +233,43 @@ def extract_prices(data):
     return prices
 
 # ---------------------------------------------------
-# ANALYZE ENDPOINT
+# CLEAN PRICES
+# ---------------------------------------------------
+
+def clean_prices(prices):
+
+    if len(prices) < 3:
+        return prices
+
+    median = statistics.median(prices)
+
+    filtered = []
+
+    for p in prices:
+
+        if median * 0.4 <= p <= median * 2.5:
+            filtered.append(p)
+
+    return filtered
+
+# ---------------------------------------------------
+# BUILD RANGE
+# ---------------------------------------------------
+
+def build_price(prices):
+
+    if not prices:
+        return "Ukendt pris"
+
+    median = int(statistics.median(prices))
+
+    low = int(round((median * 0.9) / 50) * 50)
+    high = int(round((median * 1.1) / 50) * 50)
+
+    return f"{low} - {high} kr"
+
+# ---------------------------------------------------
+# ANALYZE
 # ---------------------------------------------------
 
 @app.post("/analyze")
@@ -178,114 +277,103 @@ async def analyze(file: UploadFile = File(...)):
 
     try:
 
-        print("===================================")
+        print("=" * 50)
         print("START ANALYZE")
-        print("===================================")
+        print("=" * 50)
 
         image_bytes = await file.read()
 
-        print("IMAGE SIZE:", len(image_bytes))
+        # ----------------------------------------
+        # OPTIMIZE IMAGE
+        # ----------------------------------------
 
-        # ---------------------------------------
-        # GEMINI
-        # ---------------------------------------
+        optimized = optimize_image(image_bytes)
 
-        raw = await analyze_image(image_bytes)
+        # ----------------------------------------
+        # GEMINI ANALYSIS
+        # ----------------------------------------
 
-        print("RAW GEMINI RESPONSE:")
-        print(raw)
+        vision = await analyze_image(optimized)
 
-        clean = (
-            raw
-            .replace("```json", "")
-            .replace("```", "")
-            .strip()
-        )
-
-        print("CLEANED RESPONSE:")
-        print(clean)
-
-        # ---------------------------------------
-        # PARSE JSON
-        # ---------------------------------------
-
-        vision = json.loads(clean)
-
-        print("PARSED JSON:")
+        print("VISION RESULT:")
         print(vision)
 
-        title = vision.get("titel", "Ukendt")
-        category = vision.get("kategori", "Ukendt")
-        queries = vision.get("queries", [])
+        title = vision.get("title", "Ukendt objekt")
+        category = vision.get("category", "")
+        condition = vision.get(
+            "condition",
+            "Brugt stand"
+        )
 
-        print("TITLE:", title)
-        print("CATEGORY:", category)
-        print("QUERIES:", queries)
+        search_terms = vision.get(
+            "search_terms",
+            []
+        )
 
-        # ---------------------------------------
-        # SEARCHES
-        # ---------------------------------------
+        print("SEARCH TERMS:")
+        print(search_terms)
+
+        # ----------------------------------------
+        # PARALLEL SEARCHES
+        # ----------------------------------------
 
         tasks = []
 
-        for q in queries:
+        for q in search_terms:
 
-            search_query = f"{q} brugt dba facebook marketplace"
+            query = f"{q} brugt dba facebook marketplace"
 
             tasks.append(
-                serp_search(search_query)
+                serp_search(query)
             )
 
         results = await asyncio.gather(*tasks)
 
         print("SEARCH RESULTS:", len(results))
 
-        # ---------------------------------------
+        # ----------------------------------------
         # PRICE EXTRACTION
-        # ---------------------------------------
+        # ----------------------------------------
 
         prices = []
 
         for result in results:
 
-            found_prices = extract_prices(result)
+            found = extract_prices(result)
 
-            print("FOUND:", found_prices[:20])
+            print("FOUND:", found[:20])
 
-            prices.extend(found_prices)
+            prices.extend(found)
 
         prices = list(set(prices))
 
         print("ALL PRICES:", prices)
 
-        # ---------------------------------------
-        # MEDIAN
-        # ---------------------------------------
+        # ----------------------------------------
+        # FILTER
+        # ----------------------------------------
 
-        if prices:
-            median_price = int(statistics.median(prices))
-        else:
-            median_price = None
+        prices = clean_prices(prices)
 
-        print("MEDIAN:", median_price)
+        print("FILTERED:", prices)
 
-        # ---------------------------------------
+        # ----------------------------------------
         # RESPONSE
-        # ---------------------------------------
+        # ----------------------------------------
 
         return {
-            "success": True,
-            "titel": title,
-            "kategori": category,
-            "medianpris": median_price,
-            "fundne_priser": prices[:20]
+            "title": title,
+            "category": category,
+            "condition": condition,
+            "price": build_price(prices),
+            "matches": len(prices)
         }
 
     except Exception as e:
 
-        print("===================================")
+        print("=" * 50)
         print("FULL ERROR")
-        print("===================================")
+        print("=" * 50)
 
         print(str(e))
 
