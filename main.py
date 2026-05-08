@@ -1,40 +1,12 @@
-# main.py
-
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-
-import google.generativeai as genai
-
-import asyncio
+from fastapi.responses import JSONResponse
+from google import genai
 import base64
-import httpx
-import json
 import os
 import re
 import statistics
-
-
-# =====================================================
-# CONFIG
-# =====================================================
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-
-if not GEMINI_API_KEY:
-    raise Exception("Missing GEMINI_API_KEY")
-
-if not SERPAPI_KEY:
-    raise Exception("Missing SERPAPI_KEY")
-
-genai.configure(api_key=GEMINI_API_KEY)
-
-model = genai.GenerativeModel("gemini-1.5-flash")
-
-
-# =====================================================
-# FASTAPI
-# =====================================================
+import httpx
 
 app = FastAPI()
 
@@ -46,27 +18,110 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
-# =====================================================
-# HELPERS
-# =====================================================
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-def extract_prices(text):
+PRICE_REGEX = r"(\\d{2,6})\\s?(kr|dkk)?"
+
+# ----------------------------------------
+# Gemini analyse
+# ----------------------------------------
+
+async def analyze_image(image_bytes):
+
+    image_b64 = base64.b64encode(image_bytes).decode()
+
+    prompt = """
+Du er ekspert i danske brugtmøbler.
+
+Svar KUN som JSON.
+
+Find:
+- titel
+- kategori
+- alternative søgninger
+
+Regler:
+- ALT skal være dansk
+- ingen engelske ord
+- korte præcise søgninger
+- fokus på DBA/Facebook Marketplace
+
+Format:
+
+{
+  "titel": "...",
+  "kategori": "...",
+  "queries": [
+    "...",
+    "...",
+    "..."
+  ]
+}
+"""
+
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": image_b64
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    return response.text
+
+
+# ----------------------------------------
+# Pris søgning
+# ----------------------------------------
+
+async def serp_search(query):
+
+    url = "https://serpapi.com/search.json"
+
+    params = {
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "hl": "da",
+        "gl": "dk",
+        "google_domain": "google.dk"
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url, params=params)
+
+    return response.json()
+
+
+# ----------------------------------------
+# Pris parser
+# ----------------------------------------
+
+def extract_prices(data):
+
+    text = str(data).lower()
+
+    matches = re.findall(PRICE_REGEX, text)
 
     prices = []
 
-    matches = re.findall(
-        r'(\d{2,5})\s?(?:kr|,-|dkk)',
-        text.lower()
-    )
-
     for match in matches:
-
         try:
+            price = int(match[0])
 
-            price = int(match)
-
-            if 50 <= price <= 50000:
+            if 50 <= price <= 100000:
                 prices.append(price)
 
         except:
@@ -75,153 +130,9 @@ def extract_prices(text):
     return prices
 
 
-def clean_prices(prices):
-
-    if len(prices) < 3:
-        return prices
-
-    median = statistics.median(prices)
-
-    filtered = []
-
-    for p in prices:
-
-        if median * 0.4 <= p <= median * 2.5:
-            filtered.append(p)
-
-    return filtered
-
-
-def build_price_range(prices):
-
-    if not prices:
-        return "Ukendt pris"
-
-    median = int(statistics.median(prices))
-
-    low = int(round((median * 0.9) / 50) * 50)
-    high = int(round((median * 1.1) / 50) * 50)
-
-    return f"{low} - {high} kr"
-
-
-# =====================================================
-# GEMINI VISION
-# =====================================================
-
-async def analyze_image_with_gemini(image_bytes):
-
-    prompt = """
-    Du analyserer brugte møbler og boligobjekter i Danmark.
-
-    Returner KUN valid JSON.
-
-    Svarformat:
-
-    {
-      "title": "...",
-      "category": "...",
-      "material": "...",
-      "description": "...",
-      "searches": [
-        "...",
-        "...",
-        "...",
-        "...",
-        "..."
-      ]
-    }
-
-    Regler:
-    - Alt skal være på dansk
-    - Ingen engelske ord
-    - Beskriv objektet præcist
-    - Gæt designer/stil hvis muligt
-    - Lav gode danske søgestrenge til brugtmarked
-    - Fokusér på DBA/Facebook Marketplace søgninger
-    - Ingen markdown
-    - Ingen forklaring
-    """
-
-    image_part = {
-        "mime_type": "image/jpeg",
-        "data": image_bytes
-    }
-
-    response = model.generate_content(
-        [
-            prompt,
-            image_part
-        ]
-    )
-
-    text = response.text.strip()
-
-    text = text.replace("```json", "")
-    text = text.replace("```", "")
-
-    print("GEMINI RAW:", text)
-
-    return json.loads(text)
-
-
-# =====================================================
-# SERPAPI SEARCH
-# =====================================================
-
-async def search_query(client, query):
-
-    try:
-
-        url = "https://serpapi.com/search.json"
-
-        params = {
-            "engine": "google",
-            "q": query,
-            "hl": "da",
-            "gl": "dk",
-            "google_domain": "google.dk",
-            "num": 10,
-            "api_key": SERPAPI_KEY,
-        }
-
-        response = await client.get(
-            url,
-            params=params,
-            timeout=20
-        )
-
-        data = response.json()
-
-        prices = []
-
-        for result in data.get("organic_results", []):
-
-            text = (
-                result.get("title", "")
-                + " "
-                + result.get("snippet", "")
-            )
-
-            found = extract_prices(text)
-
-            prices.extend(found)
-
-        print("SEARCH:", query)
-        print("FOUND:", prices)
-
-        return prices
-
-    except Exception as e:
-
-        print("SEARCH ERROR:", str(e))
-
-        return []
-
-
-# =====================================================
-# ANALYZE
-# =====================================================
+# ----------------------------------------
+# Analyze endpoint
+# ----------------------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
@@ -230,82 +141,61 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        # =========================================
-        # GEMINI ANALYZE
-        # =========================================
+        # Gemini vision
+        raw = await analyze_image(image_bytes)
 
-        gemini_data = await analyze_image_with_gemini(
-            image_bytes
-        )
+        print("RAW GEMINI:", raw)
 
-        print("GEMINI:", gemini_data)
+        clean = raw.replace("```json", "").replace("```", "").strip()
 
-        searches = gemini_data.get("searches", [])
+        import json
+        vision = json.loads(clean)
 
-        # =========================================
-        # PARALLEL SEARCHES
-        # =========================================
+        title = vision["titel"]
+        category = vision["kategori"]
+        queries = vision["queries"]
 
-        async with httpx.AsyncClient() as client:
+        print("QUERIES:", queries)
 
-            tasks = [
-                search_query(client, q)
-                for q in searches[:5]
-            ]
+        # Parallel søgninger
+        tasks = []
 
-            results = await asyncio.gather(*tasks)
+        for q in queries:
+            search_query = f"{q} brugt dba facebook marketplace"
+            tasks.append(serp_search(search_query))
 
-        # =========================================
-        # COLLECT PRICES
-        # =========================================
+        results = await __import__("asyncio").gather(*tasks)
 
-        all_prices = []
+        prices = []
 
         for result in results:
-            all_prices.extend(result)
+            prices.extend(extract_prices(result))
 
-        print("ALL PRICES:", all_prices)
+        prices = list(set(prices))
 
-        all_prices = clean_prices(all_prices)
+        print("PRICES:", prices)
 
-        print("FILTERED:", all_prices)
-
-        # =========================================
-        # RESULT
-        # =========================================
+        if prices:
+            median_price = int(statistics.median(prices))
+        else:
+            median_price = None
 
         return {
-            "title": gemini_data.get("title", "Ukendt objekt"),
-            "material": gemini_data.get("material", "Ukendt"),
-            "condition": "Brugt med almindelige brugsspor",
-            "price": build_price_range(all_prices),
-            "found_prices": len(all_prices),
-            "description": gemini_data.get("description", ""),
-            "searches_used": searches,
+            "success": True,
+            "titel": title,
+            "kategori": category,
+            "medianpris": median_price,
+            "fundne_priser": prices[:20]
         }
 
     except Exception as e:
 
-        import traceback
+        print("ERROR:", str(e))
 
-        traceback.print_exc()
-
-        return {
-            "title": "Fejl",
-            "material": "Ukendt",
-            "condition": str(e),
-            "price": "Ukendt pris",
-            "found_prices": 0,
-        }
-
-
-# =====================================================
-# ROOT
-# =====================================================
-
-@app.get("/")
-def root():
-
-    return {
-        "status": "running"
-    }
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e)
+            }
+        )
