@@ -1,36 +1,51 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
 import os
 import io
 import re
 import json
+import base64
 import statistics
-import traceback
 import requests
 
-from concurrent.futures import ThreadPoolExecutor
+from typing import List
 
 from PIL import Image
-import google.generativeai as genai
+
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+
+from google.cloud import vision
+from google.oauth2 import service_account
+
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-
-if not GEMINI_API_KEY:
-    raise Exception("Missing GEMINI_API_KEY")
 
 if not SERPAPI_KEY:
     raise Exception("Missing SERPAPI_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+GOOGLE_CREDS_JSON = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
-vision_model = genai.GenerativeModel("gemini-2.5-flash")
+if not GOOGLE_CREDS_JSON:
+    raise Exception("Missing GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+
+# =========================================================
+# GOOGLE VISION
+# =========================================================
+
+credentials_info = json.loads(GOOGLE_CREDS_JSON)
+
+credentials = service_account.Credentials.from_service_account_info(
+    credentials_info
+)
+
+vision_client = vision.ImageAnnotatorClient(
+    credentials=credentials
+)
+
 
 # =========================================================
 # FASTAPI
@@ -46,165 +61,149 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================================================
-# FAST MODE CONFIG
-# =========================================================
-
-SEARCH_SITES = [
-    "dba.dk",
-    "facebook.com",
-]
-
-STOPWORDS = {
-    "flot",
-    "smuk",
-    "fin",
-    "dejlig",
-    "moderne",
-    "klassisk",
-    "retro",
-    "vintage",
-    "gammel",
-    "unik",
-    "sjælden",
-    "brugt",
-    "stand",
-    "god",
-    "meget",
-    "lille",
-    "stor",
-}
-
-# simpel RAM cache
-SEARCH_CACHE = {}
 
 # =========================================================
 # HELPERS
 # =========================================================
 
-def title_case(text: str):
-    if not text:
-        return ""
-
-    return text[:1].upper() + text[1:]
-
-
-def clean_title(title: str):
-    if not title:
-        return "Ukendt objekt"
-
-    title = re.sub(r"\s+", " ", title.strip())
-
-    return title_case(title)
-
-
-def clean_material(material: str):
-    if not material:
-        return ""
-
-    return title_case(material.strip())
-
-
-def clean_condition(condition: str):
-    if not condition:
-        return ""
-
-    return title_case(condition.strip())
+DANISH_STOPWORDS = {
+    "med",
+    "og",
+    "på",
+    "i",
+    "af",
+    "den",
+    "det",
+    "til",
+    "for",
+    "en",
+    "et",
+    "lille",
+    "stor",
+    "små",
+    "brugt",
+    "retro",
+    "vintage",
+    "teak",
+    "teaktræ",
+}
 
 
-def simplify_query(text: str):
-    words = re.findall(r"\w+", text.lower())
+def clean_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-zA-ZæøåÆØÅ0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
-    cleaned = []
 
-    for w in words:
-        if len(w) < 3:
+def build_search_queries(
+    web_entities: List[str],
+    labels: List[str],
+) -> List[str]:
+
+    terms = []
+
+    for item in web_entities:
+        item = clean_text(item)
+
+        if len(item) < 3:
             continue
 
-        if w in STOPWORDS:
+        terms.append(item)
+
+    for item in labels:
+        item = clean_text(item)
+
+        if len(item) < 3:
             continue
 
-        cleaned.append(w)
+        terms.append(item)
 
-    return " ".join(cleaned[:5])
+    final_terms = []
+
+    for item in terms:
+
+        words = [
+            w for w in item.split()
+            if w not in DANISH_STOPWORDS and len(w) > 2
+        ]
+
+        cleaned = " ".join(words)
+
+        if cleaned and cleaned not in final_terms:
+            final_terms.append(cleaned)
+
+    queries = []
+
+    if final_terms:
+        queries.append(final_terms[0])
+
+    if len(final_terms) >= 2:
+        queries.append(final_terms[0] + " " + final_terms[1])
+
+    return queries[:3]
 
 
-def extract_prices(text: str):
-    matches = re.findall(r"(\d{2,6})\s*(?:kr|dkk)?", text.lower())
+def extract_prices(text: str) -> List[int]:
 
     prices = []
 
-    for m in matches:
-        try:
-            p = int(m)
+    patterns = [
+        r"(\d{2,5})\s?kr",
+        r"kr\s?(\d{2,5})",
+        r"(\d{2,5})",
+    ]
 
-            if 20 <= p <= 100000:
-                prices.append(p)
+    for pattern in patterns:
+        matches = re.findall(pattern, text.lower())
 
-        except:
-            pass
+        for match in matches:
+            try:
+                price = int(match)
+
+                if 50 <= price <= 50000:
+                    prices.append(price)
+
+            except:
+                pass
 
     return prices
 
 
-def remove_outliers(prices):
-    if len(prices) < 3:
-        return prices
+def filter_prices(prices: List[int]) -> List[int]:
+
+    if not prices:
+        return []
+
+    prices = sorted(prices)
 
     median = statistics.median(prices)
 
     filtered = []
 
     for p in prices:
-        if median * 0.6 <= p <= median * 1.5:
-            filtered.append(p)
+
+        if p < median * 0.35:
+            continue
+
+        if p > median * 2.5:
+            continue
+
+        filtered.append(p)
 
     return filtered
 
 
-def round_to_5(value):
-    return int(round(value / 5) * 5)
-
-
-def calculate_price_range(prices):
-    if not prices:
-        return None
-
-    prices = remove_outliers(prices)
-
-    if not prices:
-        return None
-
-    median_price = statistics.median(prices)
-
-    low = round_to_5(median_price * 0.9)
-    high = round_to_5(median_price * 1.1)
-
-    if low == high:
-        return f"{low} kr"
-
-    return f"{low} – {high} kr"
-
-
-# =========================================================
-# SEARCH
-# =========================================================
-
-def serpapi_search(query: str):
-    cache_key = query.lower()
-
-    if cache_key in SEARCH_CACHE:
-        return SEARCH_CACHE[cache_key]
+def search_google_shopping(query: str):
 
     url = "https://serpapi.com/search.json"
 
     params = {
         "engine": "google",
         "q": query,
-        "api_key": SERPAPI_KEY,
-        "hl": "da",
         "gl": "dk",
-        "num": 6,
+        "hl": "da",
+        "api_key": SERPAPI_KEY,
     }
 
     response = requests.get(
@@ -213,221 +212,197 @@ def serpapi_search(query: str):
         timeout=10,
     )
 
-    data = response.json()
-
-    results = data.get("organic_results", [])
-
-    SEARCH_CACHE[cache_key] = results
-
-    return results
+    return response.json()
 
 
-def search_site(query, site):
-    try:
-        full_query = f"{query} site:{site}"
+def collect_prices(data) -> List[int]:
 
-        results = serpapi_search(full_query)
+    prices = []
 
-        prices = []
+    organic = data.get("organic_results", [])
 
-        for result in results:
-            text = ""
+    for item in organic:
 
-            if "title" in result:
-                text += " " + result["title"]
+        text_blob = json.dumps(item)
 
-            if "snippet" in result:
-                text += " " + result["snippet"]
+        found = extract_prices(text_blob)
 
-            found = extract_prices(text)
+        prices.extend(found)
 
-            prices.extend(found)
+    shopping = data.get("shopping_results", [])
 
-        return prices
+    for item in shopping:
 
-    except Exception as e:
-        print("SEARCH ERROR:", e)
-        return []
+        text_blob = json.dumps(item)
+
+        found = extract_prices(text_blob)
+
+        prices.extend(found)
+
+    return prices
 
 
-def gather_prices_parallel(query):
-    all_prices = []
+def estimate_condition(image_labels: List[str]) -> str:
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = []
+    labels_text = " ".join(image_labels).lower()
 
-        for site in SEARCH_SITES:
-            futures.append(
-                executor.submit(search_site, query, site)
-            )
+    if "damaged" in labels_text:
+        return "Brugt med tydelige brugsspor"
 
-        for future in futures:
-            try:
-                prices = future.result()
-                all_prices.extend(prices)
+    if "wood" in labels_text:
+        return "Brugt med almindelige brugsspor"
 
-            except:
-                pass
-
-    return all_prices
+    return "Brugt stand"
 
 
 # =========================================================
-# ANALYZE
+# ROUTES
 # =========================================================
-
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    try:
-        image_bytes = await file.read()
-
-        image = Image.open(io.BytesIO(image_bytes))
-
-        prompt = """
-Du analyserer et brugt objekt.
-
-Returnér KUN valid JSON.
-
-Format:
-
-{
-  "title": "",
-  "material": "",
-  "condition": "",
-  "designer": "",
-  "search_terms": []
-}
-
-REGLER:
-- realistisk titel
-- ingen fantasi
-- ingen pris
-- kort materiale
-- realistisk stand
-- designer kun hvis meget sikker
-- søgetermer korte og konkrete
-"""
-
-        response = vision_model.generate_content(
-            [
-                prompt,
-                image
-            ]
-        )
-
-        raw = response.text.strip()
-
-        raw = raw.replace("```json", "")
-        raw = raw.replace("```", "")
-
-        vision = json.loads(raw)
-
-        title = clean_title(
-            vision.get("title", "Ukendt objekt")
-        )
-
-        material = clean_material(
-            vision.get("material", "")
-        )
-
-        condition = clean_condition(
-            vision.get("condition", "")
-        )
-
-        designer = vision.get("designer", "").strip()
-
-        search_terms = vision.get("search_terms", [])
-
-        # =====================================================
-        # FAST MODE QUERIES
-        # =====================================================
-
-        queries = []
-
-        main_query = simplify_query(
-            f"{title} {material}"
-        )
-
-        queries.append(main_query)
-
-        if designer:
-            designer_query = simplify_query(
-                f"{designer} {title}"
-            )
-
-            if designer_query not in queries:
-                queries.append(designer_query)
-
-        for s in search_terms[:1]:
-            q = simplify_query(s)
-
-            if q not in queries:
-                queries.append(q)
-
-        # max 2 queries
-        queries = queries[:2]
-
-        print("QUERIES:", queries)
-
-        # =====================================================
-        # SEARCH
-        # =====================================================
-
-        all_prices = []
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = []
-
-            for q in queries:
-                futures.append(
-                    executor.submit(
-                        gather_prices_parallel,
-                        q
-                    )
-                )
-
-            for future in futures:
-                try:
-                    prices = future.result()
-                    all_prices.extend(prices)
-
-                except:
-                    pass
-
-        filtered_prices = remove_outliers(all_prices)
-
-        price_text = calculate_price_range(filtered_prices)
-
-        if not price_text:
-            price_text = "Ukendt pris"
-
-        print("TITLE:", title)
-        print("RAW PRICES:", all_prices)
-        print("FILTERED:", filtered_prices)
-        print("FINAL:", price_text)
-
-        return JSONResponse({
-            "title": title,
-            "material": material,
-            "condition": condition,
-            "price": price_text,
-            "found_prices": len(filtered_prices),
-        })
-
-    except Exception as e:
-        print("ANALYZE ERROR:")
-        traceback.print_exc()
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(e)
-            }
-        )
-
 
 @app.get("/")
-def root():
+async def root():
     return {
         "status": "ok"
     }
+
+
+@app.post("/analyze")
+async def analyze_image(file: UploadFile = File(...)):
+
+    try:
+
+        image_bytes = await file.read()
+
+        pil_image = Image.open(io.BytesIO(image_bytes))
+
+        buffered = io.BytesIO()
+
+        pil_image.save(buffered, format="JPEG")
+
+        content = buffered.getvalue()
+
+        vision_image = vision.Image(content=content)
+
+        # =====================================================
+        # WEB DETECTION
+        # =====================================================
+
+        web_detection = vision_client.web_detection(
+            image=vision_image
+        ).web_detection
+
+        web_entities = []
+
+        for entity in web_detection.web_entities[:5]:
+
+            if entity.description:
+                web_entities.append(entity.description)
+
+        # =====================================================
+        # LABELS
+        # =====================================================
+
+        label_response = vision_client.label_detection(
+            image=vision_image
+        )
+
+        labels = []
+
+        for label in label_response.label_annotations[:10]:
+            labels.append(label.description)
+
+        print("WEB ENTITIES:", web_entities)
+        print("LABELS:", labels)
+
+        # =====================================================
+        # SEARCH QUERIES
+        # =====================================================
+
+        queries = build_search_queries(
+            web_entities,
+            labels,
+        )
+
+        print("QUERIES:", queries)
+
+        all_prices = []
+
+        for query in queries:
+
+            try:
+
+                result = search_google_shopping(query)
+
+                prices = collect_prices(result)
+
+                all_prices.extend(prices)
+
+            except Exception as e:
+                print("SEARCH ERROR:", e)
+
+        print("RAW PRICES:", all_prices)
+
+        filtered_prices = filter_prices(all_prices)
+
+        print("FILTERED:", filtered_prices)
+
+        if filtered_prices:
+
+            low_price = int(min(filtered_prices))
+            high_price = int(max(filtered_prices))
+
+        else:
+
+            low_price = 0
+            high_price = 0
+
+        # =====================================================
+        # TITLE
+        # =====================================================
+
+        title = "Ukendt objekt"
+
+        if web_entities:
+            title = web_entities[0]
+
+        elif labels:
+            title = " ".join(labels[:3])
+
+        title = title.capitalize()
+
+        # =====================================================
+        # MATERIAL
+        # =====================================================
+
+        material = "Ukendt materiale"
+
+        labels_text = " ".join(labels).lower()
+
+        if "wood" in labels_text:
+            material = "Træ"
+
+        if "glass" in labels_text:
+            material += ", glas"
+
+        condition = estimate_condition(labels)
+
+        return {
+            "title": title,
+            "material": material,
+            "condition": condition,
+            "price_low": low_price,
+            "price_high": high_price,
+            "currency": "DKK",
+            "found_prices": len(filtered_prices),
+            "queries_used": queries,
+            "web_entities": web_entities,
+            "labels": labels,
+        }
+
+    except Exception as e:
+
+        print("ANALYZE ERROR:", str(e))
+
+        return {
+            "error": str(e)
+        }
