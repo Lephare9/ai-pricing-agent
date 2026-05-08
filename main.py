@@ -6,7 +6,6 @@ import os
 import io
 import re
 import json
-import base64
 import statistics
 import requests
 
@@ -28,13 +27,8 @@ if not SERPAPI_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-vision_model = genai.GenerativeModel(
-    "models/gemini-1.5-flash-latest"
-)
-
-text_model = genai.GenerativeModel(
-    "models/gemini-1.5-flash-latest"
-)
+vision_model = genai.GenerativeModel("gemini-1.5-flash")
+text_model = genai.GenerativeModel("gemini-1.5-flash")
 
 # =========================================================
 # FASTAPI
@@ -66,7 +60,6 @@ STOPWORDS = {
     "gammel",
     "unik",
     "sjælden",
-    "dekorativ",
     "brugt",
     "stand",
     "god",
@@ -74,6 +67,7 @@ STOPWORDS = {
     "lille",
     "stor",
 }
+
 
 SEARCH_SITES = [
     "dba.dk",
