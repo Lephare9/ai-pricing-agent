@@ -11,7 +11,7 @@ import traceback
 import requests
 
 from PIL import Image
-from google import genai
+import google.generativeai as genai
 
 # =========================================================
 # CONFIG
@@ -26,7 +26,9 @@ if not GEMINI_API_KEY:
 if not SERPAPI_KEY:
     raise Exception("Missing SERPAPI_KEY")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+
+vision_model = genai.GenerativeModel("gemini-2.5-flash")
 
 # =========================================================
 # FASTAPI
@@ -66,48 +68,41 @@ STOPWORDS = {
     "stor",
 }
 
+
 SEARCH_SITES = [
     "dba.dk",
     "facebook.com",
     "etsy.com",
     "ebay.com",
-    "ebay.de",
     "trendsales.dk",
 ]
 
 
-def title_case(text: str) -> str:
+def title_case(text: str):
     if not text:
         return ""
 
     return text[:1].upper() + text[1:]
 
 
-def clean_title(title: str) -> str:
+def clean_title(title: str):
     if not title:
         return "Ukendt objekt"
 
-    title = title.strip()
-    title = re.sub(r"\s+", " ", title)
+    title = re.sub(r"\s+", " ", title.strip())
 
     return title_case(title)
 
 
-def clean_material(material: str) -> str:
-    if not material:
-        return ""
-
-    return title_case(material.strip())
+def clean_material(material: str):
+    return title_case(material.strip()) if material else ""
 
 
-def clean_condition(condition: str) -> str:
-    if not condition:
-        return ""
-
-    return title_case(condition.strip())
+def clean_condition(condition: str):
+    return title_case(condition.strip()) if condition else ""
 
 
-def simplify_query(text: str) -> str:
+def simplify_query(text: str):
     words = re.findall(r"\w+", text.lower())
 
     cleaned = []
@@ -172,11 +167,8 @@ def calculate_price_range(prices):
 
     median_price = statistics.median(prices)
 
-    low = median_price * 0.9
-    high = median_price * 1.1
-
-    low = round_to_5(low)
-    high = round_to_5(high)
+    low = round_to_5(median_price * 0.9)
+    high = round_to_5(median_price * 1.1)
 
     if low == high:
         return f"{low} kr"
@@ -262,29 +254,22 @@ Format:
 }
 
 Regler:
-- title skal være realistisk og konkret
+- title skal være realistisk
 - ingen fantasinavne
 - ingen pris
+- material kort
+- condition realistisk
 - designer kun hvis meget sikker
-- material skal være kort
-- condition skal være realistisk
-- search_terms skal være gode søgninger til brugtmarked
 """
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
+        response = vision_model.generate_content(
+            [
                 prompt,
-                image,
+                image
             ]
         )
 
-        raw = response.text
-
-        if not raw:
-            raise Exception("Empty Gemini response")
-
-        raw = raw.strip()
+        raw = response.text.strip()
 
         raw = raw.replace("```json", "")
         raw = raw.replace("```", "")
@@ -360,10 +345,6 @@ Regler:
             }
         )
 
-
-# =========================================================
-# ROOT
-# =========================================================
 
 @app.get("/")
 def root():
