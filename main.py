@@ -22,19 +22,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
-# -----------------------------
-# FORMAT HELPERS
-# -----------------------------
+# -----------------------------------
+# HELPERS
+# -----------------------------------
 def first_upper(text):
     if not text:
         return ""
+
     text = text.strip().lower()
+
     return text[0].upper() + text[1:]
 
 
-# -----------------------------
-# IMAGE ANALYSIS (OPENAI VISION)
-# -----------------------------
+# -----------------------------------
+# OPENAI VISION ANALYSIS
+# -----------------------------------
 def analyze_image(image_bytes):
 
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -68,10 +70,10 @@ Format:
 
 Regler:
 - title = kort præcist navn
-- designer = kendt designer hvis muligt ellers tom streng
-- condition = kort dansk vurdering
+- designer = kendt designer hvis muligt ellers ""
+- condition = kort vurdering på dansk
 - material = materiale/type
-- ingen forklaringer
+- ingen forklaring
 """
                         },
                         {
@@ -89,9 +91,10 @@ Regler:
     )
 
     try:
+
         content = response.json()["choices"][0]["message"]["content"]
 
-        # FIX JSON PARSING
+        # FIX markdown wrappers
         content = content.replace("```json", "")
         content = content.replace("```", "")
         content = content.strip()
@@ -106,7 +109,8 @@ Regler:
         }
 
     except Exception as e:
-        print("OPENAI PARSE ERROR:", e)
+
+        print("OPENAI ERROR:", e)
 
         return {
             "title": "ukendt",
@@ -116,21 +120,33 @@ Regler:
         }
 
 
-# -----------------------------
-# BUILD SEARCH QUERY
-# -----------------------------
+# -----------------------------------
+# SMART SEARCH QUERY
+# -----------------------------------
 def build_query(data):
+
+    title = data["title"].lower()
+    material = data["material"].lower()
+
+    # special smartere søgninger
+    if "trækasse" in title:
+        return "vintage trækasse gammel ølkasse trækasse brugt pris"
+
+    if "fletstol" in title:
+        return "fletstol rattan stol brugt dba"
+
+    if "adventsstage" in title:
+        return "kubus lysestage mogens lassen brugt"
 
     parts = []
 
     if data["designer"]:
         parts.append(data["designer"])
 
-    if data["title"]:
-        parts.append(data["title"])
+    parts.append(title)
 
-    if data["material"]:
-        parts.append(data["material"])
+    if material:
+        parts.append(material)
 
     parts.append("brugt")
 
@@ -141,9 +157,9 @@ def build_query(data):
     return query
 
 
-# -----------------------------
-# GET PRICES FROM GOOGLE/SERPAPI
-# -----------------------------
+# -----------------------------------
+# FETCH PRICES
+# -----------------------------------
 def get_prices(query):
 
     try:
@@ -169,18 +185,19 @@ def get_prices(query):
         for result in organic:
 
             text = (
-                result.get("title", "") + " " +
+                result.get("title", "") +
+                " " +
                 result.get("snippet", "")
-            )
+            ).lower()
 
-            found = re.findall(r'(\d{2,5})\s?kr', text.lower())
+            found = re.findall(r'(\d{2,5})\s?kr', text)
 
             for p in found:
 
                 try:
+
                     value = int(p)
 
-                    # hårde filtre
                     if value < 50:
                         continue
 
@@ -197,19 +214,21 @@ def get_prices(query):
         return prices
 
     except Exception as e:
+
         print("SERP ERROR:", e)
+
         return []
 
 
-# -----------------------------
-# SMART FILTER
-# -----------------------------
+# -----------------------------------
+# FILTER PRICES
+# -----------------------------------
 def filter_prices(prices):
 
     if not prices:
         return []
 
-    # fjern duplicates
+    # remove duplicates
     prices = sorted(list(set(prices)))
 
     if len(prices) < 3:
@@ -221,7 +240,7 @@ def filter_prices(prices):
 
     for p in prices:
 
-        # behold kun realistiske værdier
+        # fjern vilde outliers
         if p > median * 0.45 and p < median * 2.2:
             filtered.append(p)
 
@@ -230,9 +249,9 @@ def filter_prices(prices):
     return filtered
 
 
-# -----------------------------
-# PRICE RANGE
-# -----------------------------
+# -----------------------------------
+# BUILD RANGE
+# -----------------------------------
 def make_price_range(prices):
 
     if not prices:
@@ -246,34 +265,38 @@ def make_price_range(prices):
     return f"{low} - {high} kr"
 
 
-# -----------------------------
+# -----------------------------------
 # API
-# -----------------------------
+# -----------------------------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
 
     image_bytes = await file.read()
 
-    # 1. vision analyse
+    # 1 vision
     data = analyze_image(image_bytes)
 
-    # 2. build search query
+    print("VISION:", data)
+
+    # 2 build search
     query = build_query(data)
 
-    # 3. fetch prices
+    # 3 fetch prices
     raw_prices = get_prices(query)
 
-    # 4. filter
+    # 4 filter
     filtered = filter_prices(raw_prices)
 
-    # 5. range
+    # 5 range
     price_range = make_price_range(filtered)
 
     title = first_upper(data["title"])
     material = data["material"].lower()
     condition = first_upper(data["condition"])
 
+    # ingen fake fallback
     if not price_range:
+
         return {
             "title": title,
             "extra": material,
