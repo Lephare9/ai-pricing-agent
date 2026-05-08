@@ -35,13 +35,13 @@ app.add_middleware(
 # ---------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERPAPI_KEY    = os.getenv("SERPAPI_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
 print("GEMINI:", bool(GEMINI_API_KEY))
 print("SERPAPI:", bool(SERPAPI_KEY))
 
 # ---------------------------------------------------
-# GEMINI CLIENT
+# GEMINI
 # ---------------------------------------------------
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -52,19 +52,15 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 @app.get("/")
 async def root():
-    return {
-        "status": "ok",
-        "version": "v6"
-    }
+    return {"status": "ok"}
 
 # ---------------------------------------------------
-# IMAGE OPTIMIZATION
+# IMAGE OPTIMIZE
 # ---------------------------------------------------
 
 def optimize_image(image_bytes):
 
     image = Image.open(io.BytesIO(image_bytes))
-
     image = image.convert("RGB")
 
     image.thumbnail((1200, 1200))
@@ -82,6 +78,7 @@ def optimize_image(image_bytes):
 
     print("=" * 40)
     print(f"IMAGE: {len(image_bytes)} → {len(optimized)} bytes")
+    print("=" * 40)
 
     return optimized
 
@@ -92,34 +89,22 @@ def optimize_image(image_bytes):
 async def analyze_image(image_bytes):
 
     prompt = """
-Du analyserer brugte genstande i Danmark.
+Analyser objektet i centrum af billedet.
 
-Fokusér KUN på hovedobjektet i midten af billedet.
-
-Returnér KUN valid JSON.
-
-Format:
+Returnér KUN valid JSON:
 
 {
-  "title": "kort navn",
+  "title": "kort dansk navn",
   "category": "kategori",
   "condition": "Brugt",
-  "search_term": "mest præcise DBA søgning"
+  "search_term": "meget præcis DBA søgning"
 }
 
 Regler:
-- KUN ét objekt
-- Korte danske navne
-- search_term skal ligne noget folk søger på DBA
-
-Eksempel:
-
-{
-  "title": "Rattan lænestol",
-  "category": "Lænestole",
-  "condition": "Brugt",
-  "search_term": "Rattan lænestol"
-}
+- Fokusér kun på hovedobjektet
+- Ignorér baggrund
+- search_term skal være kort og præcis
+- dansk tekst
 """
 
     models = [
@@ -133,7 +118,6 @@ Eksempel:
 
         try:
 
-            print("=" * 40)
             print(f"MODEL: {model_name}")
 
             response = client.models.generate_content(
@@ -148,12 +132,7 @@ Eksempel:
             )
 
             text = response.text.strip()
-
-            text = re.sub(
-                r"```json|```",
-                "",
-                text
-            ).strip()
+            text = re.sub(r"```json|```", "", text).strip()
 
             print(text)
 
@@ -161,175 +140,121 @@ Eksempel:
 
         except Exception as e:
 
-            print(f"MODEL ERROR: {e}")
-
+            print(f"GEMINI FEJL: {e}")
             last_error = e
 
-    raise Exception(last_error)
+    raise Exception(f"ALLE MODELLER FEJLEDE: {last_error}")
 
 # ---------------------------------------------------
-# SERPAPI SEARCH
+# SERP SEARCH
 # ---------------------------------------------------
 
 async def serp_search(query):
 
-    searches = [
+    print("=" * 40)
+    print(f"SEARCH: {query}")
+    print("=" * 40)
 
-        f"{query} DBA",
+    url = "https://serpapi.com/search.json"
 
-        f"{query} Facebook Marketplace",
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "hl": "da",
+        "gl": "dk",
+        "google_domain": "google.dk",
+        "num": 10
+    }
 
-        f"{query} GulogGratis",
+    try:
 
-        f"{query} Trendsales"
+        async with httpx.AsyncClient(timeout=20) as http:
 
-    ]
+            response = await http.get(
+                url,
+                params=params
+            )
 
-    results = []
+        print(f"HTTP STATUS: {response.status_code}")
 
-    async with httpx.AsyncClient(timeout=20) as http:
+        data = response.json()
 
-        for q in searches:
+        print("KEYS:", data.keys())
 
+        if "error" in data:
             print("=" * 40)
-            print(f"SEARCH: {q}")
+            print("SERPAPI ERROR")
+            print("=" * 40)
+            print(data["error"])
 
-            params = {
-                "engine": "google",
-                "q": q,
-                "api_key": SERPAPI_KEY,
-                "google_domain": "google.dk",
-                "gl": "dk",
-                "hl": "da",
-                "num": 10
-            }
+        print(
+            "ORGANIC COUNT:",
+            len(data.get("organic_results", []))
+        )
 
-            try:
+        return data
 
-                response = await http.get(
-                    "https://serpapi.com/search.json",
-                    params=params
-                )
+    except Exception as e:
 
-                data = response.json()
+        print("SEARCH EXCEPTION:")
+        print(str(e))
 
-                print("KEYS:", data.keys())
-
-                organic = data.get(
-                    "organic_results",
-                    []
-                )
-
-                print(
-                    "ORGANIC COUNT:",
-                    len(organic)
-                )
-
-                for r in organic[:3]:
-
-                    print("--- RESULT ---")
-
-                    print(
-                        "TITLE:",
-                        r.get("title")
-                    )
-
-                    print(
-                        "SNIPPET:",
-                        r.get("snippet")
-                    )
-
-                results.append(data)
-
-            except Exception as e:
-
-                print(f"SEARCH ERROR: {e}")
-
-    return results
+        return {}
 
 # ---------------------------------------------------
 # EXTRACT PRICES
 # ---------------------------------------------------
 
-def extract_prices_from_results(data):
+def extract_prices(data):
 
-    prices = []
+    text_parts = []
 
-    texts = []
+    for result in data.get("organic_results", []):
 
-    # ORGANIC RESULTS
-    for r in data.get("organic_results", []):
-
-        texts.append(
-            str(r.get("title", ""))
+        text_parts.append(
+            result.get("title", "")
         )
 
-        texts.append(
-            str(r.get("snippet", ""))
+        text_parts.append(
+            result.get("snippet", "")
         )
 
-        if "rich_snippet" in r:
-
-            texts.append(
-                json.dumps(r["rich_snippet"])
-            )
-
-    # SHOPPING RESULTS
-    for r in data.get("shopping_results", []):
-
-        texts.append(
-            str(r.get("title", ""))
-        )
-
-        texts.append(
-            str(r.get("price", ""))
-        )
-
-    combined = "\n".join(texts)
+    combined = " ".join(text_parts)
 
     print("=" * 40)
     print("RAW SEARCH TEXT")
     print("=" * 40)
-
-    print(combined[:4000])
+    print(combined[:3000])
 
     patterns = [
 
-        # 2.500 kr
-        r'(\d{1,3}(?:[., ]\d{3})+)\s*(?:kr|KR|Kr|dkk|DKK)',
+        r'(\d{2,5})\s?kr',
 
-        # kr 2.500
-        r'(?:kr|KR|Kr|dkk|DKK)\s*(\d{1,3}(?:[., ]\d{3})+)',
+        r'(\d{2,5})\s?kroner',
 
-        # 2500 kr
-        r'(\d{3,6})\s*(?:kr|KR|Kr|dkk|DKK)',
+        r'kr\.?\s?(\d{2,5})',
 
-        # kr 2500
-        r'(?:kr|KR|Kr|dkk|DKK)\s*(\d{3,6})',
+        r'(\d{2,5}),-',
 
-        # 2 500
-        r'(\d{1,3}(?: \d{3})+)',
-
+        r'(\d{2,5})\s?dkk'
     ]
+
+    prices = []
 
     for pattern in patterns:
 
         matches = re.findall(
             pattern,
-            combined
+            combined,
+            flags=re.IGNORECASE
         )
 
-        for raw in matches:
+        for m in matches:
 
             try:
 
-                cleaned = (
-                    raw.replace(".", "")
-                       .replace(",", "")
-                       .replace(" ", "")
-                )
-
-                price = int(cleaned)
+                price = int(m)
 
                 if 50 <= price <= 50000:
                     prices.append(price)
@@ -337,9 +262,7 @@ def extract_prices_from_results(data):
             except:
                 pass
 
-    prices = sorted(
-        list(set(prices))
-    )
+    prices = sorted(list(set(prices)))
 
     print("FOUND:", prices)
 
@@ -360,11 +283,8 @@ def clean_prices(prices):
     median = statistics.median(prices)
 
     filtered = [
-
         p for p in prices
-
         if median * 0.4 <= p <= median * 2.5
-
     ]
 
     print("FILTERED:", filtered)
@@ -380,31 +300,18 @@ def build_price(prices):
     if not prices:
         return "Ukendt pris"
 
-    median = int(
-        statistics.median(prices)
-    )
+    median = int(statistics.median(prices))
 
-    low = int(
-        round((median * 0.85) / 50) * 50
-    )
+    rounded = round(median / 50) * 50
 
-    high = int(
-        round((median * 1.15) / 50) * 50
-    )
-
-    if low == high:
-        return f"{low} kr"
-
-    return f"{low} - {high} kr"
+    return f"{rounded} kr"
 
 # ---------------------------------------------------
-# MAIN ANALYZE ENDPOINT
+# ANALYZE
 # ---------------------------------------------------
 
 @app.post("/analyze")
-async def analyze(
-    file: UploadFile = File(...)
-):
+async def analyze(file: UploadFile = File(...)):
 
     try:
 
@@ -414,89 +321,72 @@ async def analyze(
 
         image_bytes = await file.read()
 
-        optimized = optimize_image(
-            image_bytes
-        )
+        optimized = optimize_image(image_bytes)
 
-        # GEMINI
-        vision = await analyze_image(
-            optimized
-        )
+        vision = await analyze_image(optimized)
 
         print("VISION:", vision)
 
-        title = vision.get(
-            "title",
-            "Ukendt objekt"
-        )
+        title = vision.get("title", "Ukendt objekt")
+        category = vision.get("category", "")
+        condition = vision.get("condition", "Brugt")
 
-        category = vision.get(
-            "category",
-            ""
-        )
+        term = vision.get("search_term", title)
 
-        condition = vision.get(
-            "condition",
-            "Brugt"
-        )
+        searches = [
 
-        search_term = vision.get(
-            "search_term",
-            title
-        )
+            f"{term} DBA",
 
-        # SEARCH
-        results = await serp_search(
-            search_term
-        )
+            f"{term} Facebook Marketplace",
+
+            f"{term} GulogGratis",
+
+            f"{term} Trendsales"
+        ]
+
+        tasks = [
+            serp_search(q)
+            for q in searches
+        ]
+
+        results = await asyncio.gather(*tasks)
 
         all_prices = []
 
-        for result in results:
+        for r in results:
 
-            found = extract_prices_from_results(
-                result
-            )
+            found = extract_prices(r)
 
             all_prices.extend(found)
 
-        all_prices = sorted(
-            list(set(all_prices))
-        )
+        all_prices = sorted(list(set(all_prices)))
 
         print("ALL:", all_prices)
 
-        all_prices = clean_prices(
-            all_prices
-        )
+        cleaned = clean_prices(all_prices)
 
         return {
-
             "title": title,
-
             "category": category,
-
             "condition": condition,
-
-            "price": build_price(
-                all_prices
-            ),
-
-            "matches": len(all_prices)
-
+            "price": build_price(cleaned),
+            "matches": len(cleaned)
         }
 
     except Exception as e:
 
         print("=" * 40)
-        print("FULL ERROR")
+        print("FATAL ERROR")
         print("=" * 40)
+
+        print(str(e))
 
         traceback.print_exc()
 
         return JSONResponse(
             status_code=500,
             content={
+                "success": False,
                 "error": str(e)
             }
         )
