@@ -50,6 +50,34 @@ print("VISION:", bool(GOOGLE_VISION_API_KEY))
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------
+# DESIGNER BRANDS
+# ---------------------------------------------------
+
+HIGH_VALUE_DESIGN = [
+    "hay",
+    "mater",
+    "wegner",
+    "fritz hansen",
+    "carl hansen",
+    "pp møbler",
+    "boconcept",
+    "montana",
+    "gubi",
+    "eames",
+    "kartell"
+]
+
+HIGH_VALUE_FURNITURE = [
+    "stol",
+    "lænestol",
+    "barstol",
+    "sofa",
+    "bord",
+    "spisebord",
+    "designerstol"
+]
+
+# ---------------------------------------------------
 # ROOT
 # ---------------------------------------------------
 
@@ -58,7 +86,7 @@ async def root():
     return {"status": "ok"}
 
 # ---------------------------------------------------
-# IMAGE OPTIMIZATION
+# IMAGE OPTIMIZE
 # ---------------------------------------------------
 
 def optimize_image(image_bytes):
@@ -142,14 +170,18 @@ async def detect_web_entities(image_bytes):
             for entity in web_entities:
 
                 desc = entity.get("description", "").strip()
+                score = entity.get("score", 0)
 
-                if len(desc) > 2:
-                    entities.append(desc)
+                # Kun relativt sikre entities
+                if score >= 0.70 and len(desc) > 2:
+
+                    entities.append({
+                        "name": desc,
+                        "score": score
+                    })
 
         except:
             pass
-
-        entities = list(dict.fromkeys(entities))[:10]
 
         print("WEB ENTITIES:")
         print(entities)
@@ -172,17 +204,17 @@ async def analyze_image(image_bytes, web_entities):
     prompt = f"""
 Du analyserer brugte genstande i Danmark.
 
-Google Vision web entities:
+Google Vision entities:
 {web_entities}
 
-Hvis entities indeholder:
-- designer
-- brand
-- model
-- kendt møbel
-så SKAL det bruges aktivt.
+VIGTIGT:
 
-Fokusér KUN på hovedobjektet i centrum.
+- Ignorér objekter i baggrunden
+- Fokusér KUN på hovedobjektet i centrum
+- Gæt ALDRIG designer eller brand hvis du er usikker
+- Brug kun designer/brand hvis sandsynligheden er høj
+- Hvis du er usikker:
+  brug generisk titel i stedet
 
 Returnér KUN valid JSON:
 
@@ -195,10 +227,9 @@ Returnér KUN valid JSON:
 
 Regler:
 - Dansk
-- Hvis designer eller brand genkendes SKAL det med
-- Hvis modelnavn genkendes SKAL det med
-- Ingen generiske titler hvis brand findes
-- search_term skal være præcis
+- Kort title
+- search_term skal være realistisk
+- Ingen overdreven designer-gætning
 """
 
     models = [
@@ -454,7 +485,71 @@ def build_price(prices):
     else:
         rounded = round(median / 50) * 50
 
-    return f"{int(rounded)} kr"
+    return int(rounded)
+
+# ---------------------------------------------------
+# DESIGN VALIDATION
+# ---------------------------------------------------
+
+def validate_design_prediction(
+    title,
+    category,
+    median_price
+):
+
+    title_lower = title.lower()
+    category_lower = category.lower()
+
+    detected_brand = None
+
+    for brand in HIGH_VALUE_DESIGN:
+
+        if brand in title_lower:
+            detected_brand = brand
+            break
+
+    if not detected_brand:
+        return title
+
+    is_furniture = any(
+        word in category_lower
+        for word in HIGH_VALUE_FURNITURE
+    )
+
+    if not is_furniture:
+        return title
+
+    # for billigt til premium design
+    if median_price < 1200:
+
+        print("=" * 40)
+        print("DESIGN REJECTED")
+        print(
+            f"{detected_brand} rejected "
+            f"(median {median_price})"
+        )
+        print("=" * 40)
+
+        cleaned = title
+
+        for brand in HIGH_VALUE_DESIGN:
+
+            cleaned = re.sub(
+                brand,
+                "",
+                cleaned,
+                flags=re.IGNORECASE
+            )
+
+        cleaned = re.sub(
+            r"\s+",
+            " ",
+            cleaned
+        ).strip()
+
+        return cleaned
+
+    return title
 
 # ---------------------------------------------------
 # ANALYZE
@@ -473,10 +568,12 @@ async def analyze(file: UploadFile = File(...)):
 
         optimized = optimize_image(image_bytes)
 
+        # Vision Web Detection
         web_entities = await detect_web_entities(
             optimized
         )
 
+        # Gemini
         vision = await analyze_image(
             optimized,
             web_entities
@@ -513,11 +610,19 @@ async def analyze(file: UploadFile = File(...)):
 
         filtered = clean_prices(all_prices)
 
+        median_price = build_price(filtered)
+
+        title = validate_design_prediction(
+            title,
+            category,
+            median_price
+        )
+
         return {
             "title": title,
             "category": category,
             "condition": condition,
-            "price": build_price(filtered)
+            "price": f"{median_price} kr"
         }
 
     except Exception as e:
