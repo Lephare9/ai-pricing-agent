@@ -10,6 +10,7 @@ from PIL import Image
 import statistics
 import traceback
 import httpx
+import asyncio
 import json
 import re
 import os
@@ -115,6 +116,19 @@ Regler:
 - kort titel
 - præcis DBA-lignende søgning
 - ignorér baggrund
+
+Beskriv reel stand.
+
+Dårligt:
+- "Brugt"
+
+Godt:
+- "God stand"
+- "Små brugsspor"
+- "Let slitage"
+- "Næsten som ny"
+- "Hul ved lomme"
+- "Afslag på kant"
 """
 
     models = [
@@ -166,87 +180,103 @@ Regler:
 # SEARCH
 # ---------------------------------------------------
 
+async def single_search(http, source, query):
+
+    print("=" * 40)
+    print(f"SEARCH: {query}")
+
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "google_domain": "google.dk",
+        "gl": "dk",
+        "hl": "da",
+        "num": 10
+    }
+
+    try:
+
+        response = await http.get(
+            "https://serpapi.com/search.json",
+            params=params
+        )
+
+        data = response.json()
+
+        organic = data.get(
+            "organic_results",
+            []
+        )
+
+        print(
+            "ORGANIC COUNT:",
+            len(organic)
+        )
+
+        return {
+            "source": source,
+            "data": data
+        }
+
+    except Exception as e:
+
+        print(f"SEARCH ERROR: {e}")
+
+        return {
+            "source": source,
+            "data": {}
+        }
+
 async def serp_search(query):
 
     searches = [
 
         {
             "source": "DBA",
-            "query": f"{query} DBA"
+            "query":
+            f"{query} DBA"
         },
 
         {
             "source": "Marketplace",
-            "query": f"{query} Facebook Marketplace"
+            "query":
+            f"site:facebook.com/marketplace {query} Danmark"
         },
 
         {
             "source": "GulogGratis",
-            "query": f"{query} GulogGratis"
+            "query":
+            f"{query} GulogGratis"
         },
 
         {
             "source": "Lauritz",
-            "query": f"{query} Lauritz solgt"
+            "query":
+            f"{query} Lauritz solgt"
         }
 
     ]
-
-    results = []
 
     async with httpx.AsyncClient(
         timeout=20
     ) as http:
 
-        for item in searches:
+        tasks = [
 
-            print("=" * 40)
-            print(
-                f"SEARCH: {item['query']}"
+            single_search(
+                http,
+                item["source"],
+                item["query"]
             )
 
-            params = {
-                "engine": "google",
-                "q": item["query"],
-                "api_key": SERPAPI_KEY,
-                "google_domain": "google.dk",
-                "gl": "dk",
-                "hl": "da",
-                "num": 10
-            }
+            for item in searches
 
-            try:
+        ]
 
-                response = await http.get(
-                    "https://serpapi.com/search.json",
-                    params=params
-                )
-
-                data = response.json()
-
-                organic = data.get(
-                    "organic_results",
-                    []
-                )
-
-                print(
-                    "ORGANIC COUNT:",
-                    len(organic)
-                )
-
-                results.append({
-
-                    "source": item["source"],
-
-                    "data": data
-
-                })
-
-            except Exception as e:
-
-                print(
-                    f"SEARCH ERROR: {e}"
-                )
+        results = await asyncio.gather(
+            *tasks
+        )
 
     return results
 
@@ -341,6 +371,22 @@ def extract_prices(source, data):
         texts.append(snippet)
 
     combined = " ".join(texts)
+
+    # -----------------------------------
+    # REMOVE SIZE REFERENCES
+    # -----------------------------------
+
+    combined = re.sub(
+
+        r'(str\.?|størrelse)\s*[a-zA-Z0-9]+',
+
+        '',
+
+        combined,
+
+        flags=re.IGNORECASE
+
+    )
 
     print("=" * 40)
     print(f"RAW SEARCH TEXT [{source}]")
