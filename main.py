@@ -7,10 +7,11 @@ from google.genai import types
 
 from PIL import Image
 
+import asyncio
 import statistics
 import traceback
 import httpx
-import asyncio
+import base64
 import json
 import re
 import os
@@ -36,17 +37,17 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 
 print("GEMINI:", bool(GEMINI_API_KEY))
 print("SERPAPI:", bool(SERPAPI_KEY))
+print("VISION:", bool(GOOGLE_VISION_API_KEY))
 
 # ---------------------------------------------------
-# GEMINI
+# GEMINI CLIENT
 # ---------------------------------------------------
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------
 # ROOT
@@ -54,24 +55,18 @@ client = genai.Client(
 
 @app.get("/")
 async def root():
-
-    return {
-        "status": "ok"
-    }
+    return {"status": "ok"}
 
 # ---------------------------------------------------
-# IMAGE OPTIMIZATION
+# IMAGE OPTIMIZE
 # ---------------------------------------------------
 
 def optimize_image(image_bytes):
 
-    image = Image.open(
-        io.BytesIO(image_bytes)
-    )
-
+    image = Image.open(io.BytesIO(image_bytes))
     image = image.convert("RGB")
 
-    image.thumbnail((1200,1200))
+    image.thumbnail((1400, 1400))
 
     output = io.BytesIO()
 
@@ -85,58 +80,132 @@ def optimize_image(image_bytes):
     optimized = output.getvalue()
 
     print("=" * 40)
-    print(
-        f"IMAGE: {len(image_bytes)} → "
-        f"{len(optimized)} bytes"
-    )
+    print(f"IMAGE: {len(image_bytes)} → {len(optimized)} bytes")
+    print("=" * 40)
 
     return optimized
+
+# ---------------------------------------------------
+# GOOGLE VISION WEB DETECTION
+# ---------------------------------------------------
+
+async def detect_web_entities(image_bytes):
+
+    try:
+
+        print("=" * 40)
+        print("VISION WEB DETECTION")
+        print("=" * 40)
+
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        url = (
+            "https://vision.googleapis.com/v1/images:annotate"
+            f"?key={GOOGLE_VISION_API_KEY}"
+        )
+
+        payload = {
+            "requests": [
+                {
+                    "image": {
+                        "content": base64_image
+                    },
+                    "features": [
+                        {
+                            "type": "WEB_DETECTION",
+                            "maxResults": 10
+                        }
+                    ]
+                }
+            ]
+        }
+
+        async with httpx.AsyncClient(timeout=20) as http:
+
+            response = await http.post(
+                url,
+                json=payload
+            )
+
+        data = response.json()
+
+        entities = []
+
+        try:
+
+            web_entities = (
+                data["responses"][0]
+                ["webDetection"]
+                ["webEntities"]
+            )
+
+            for entity in web_entities:
+
+                desc = entity.get("description", "").strip()
+
+                if len(desc) > 2:
+                    entities.append(desc)
+
+        except:
+            pass
+
+        entities = list(dict.fromkeys(entities))[:10]
+
+        print("WEB ENTITIES:")
+        print(entities)
+
+        return entities
+
+    except Exception as e:
+
+        print("VISION ERROR:")
+        print(e)
+
+        return []
 
 # ---------------------------------------------------
 # GEMINI ANALYZE
 # ---------------------------------------------------
 
-async def analyze_image(image_bytes):
+async def analyze_image(image_bytes, web_entities):
 
-    prompt = """
-Analyser hovedobjektet
-i centrum af billedet.
+    prompt = f"""
+Du analyserer brugte genstande i Danmark.
+
+Google Vision web entities:
+{web_entities}
+
+Hvis entities indeholder:
+- designer
+- brand
+- model
+- kendt møbel
+så SKAL det bruges aktivt.
+
+Fokusér KUN på hovedobjektet i centrum.
 
 Returnér KUN valid JSON:
 
-{
-  "title": "...",
-  "category": "...",
-  "condition": "...",
-  "search_term": "..."
-}
+{{
+  "title": "Kort præcist navn",
+  "category": "Kategori",
+  "condition": "Kort vurdering af stand og evt fejl",
+  "search_term": "Meget præcis DBA søgning"
+}}
 
 Regler:
-- dansk sprog
-- kort titel
-- præcis DBA-lignende søgning
-- ignorér baggrund
-
-Beskriv reel stand.
-
-Dårligt:
-- "Brugt"
-
-Godt:
-- "God stand"
-- "Små brugsspor"
-- "Let slitage"
-- "Næsten som ny"
-- "Hul ved lomme"
-- "Afslag på kant"
+- Dansk
+- Hvis designer eller brand genkendes SKAL det med
+- Hvis modelnavn genkendes SKAL det med
+- Ingen generiske titler hvis brand findes
+- search_term skal være præcis
 """
 
     models = [
         "gemini-2.5-flash",
-        "gemini-2.5-flash-lite"
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash"
     ]
-
-    last_error = None
 
     for model_name in models:
 
@@ -144,6 +213,7 @@ Godt:
 
             print("=" * 40)
             print(f"MODEL: {model_name}")
+            print("=" * 40)
 
             response = client.models.generate_content(
                 model=model_name,
@@ -157,12 +227,7 @@ Godt:
             )
 
             text = response.text.strip()
-
-            text = re.sub(
-                r"```json|```",
-                "",
-                text
-            ).strip()
+            text = re.sub(r"```json|```", "", text).strip()
 
             print(text)
 
@@ -170,49 +235,60 @@ Godt:
 
         except Exception as e:
 
-            print(e)
+            print(f"MODEL ERROR: {e}")
 
-            last_error = e
-
-    raise Exception(last_error)
+    raise Exception("Gemini failed")
 
 # ---------------------------------------------------
 # SEARCH
 # ---------------------------------------------------
 
-async def single_search(http, source, query):
-
-    print("=" * 40)
-    print(f"SEARCH: {query}")
-
-    params = {
-        "engine": "google",
-        "q": query,
-        "api_key": SERPAPI_KEY,
-        "google_domain": "google.dk",
-        "gl": "dk",
-        "hl": "da",
-        "num": 10
-    }
+async def serp_search(query, source):
 
     try:
 
-        response = await http.get(
-            "https://serpapi.com/search.json",
-            params=params
-        )
+        print("=" * 40)
+        print(f"SEARCH: {query} {source}")
+        print("=" * 40)
+
+        q = query
+
+        if source == "DBA":
+            q += " site:dba.dk"
+
+        elif source == "Marketplace":
+            q += " site:facebook.com/marketplace Danmark"
+
+        elif source == "Lauritz":
+            q += " site:lauritz.com hammer"
+
+        elif source == "GulogGratis":
+            q += " site:guloggratis.dk"
+
+        url = "https://serpapi.com/search.json"
+
+        params = {
+            "engine": "google",
+            "q": q,
+            "api_key": SERPAPI_KEY,
+            "google_domain": "google.dk",
+            "gl": "dk",
+            "hl": "da",
+            "num": 10
+        }
+
+        async with httpx.AsyncClient(timeout=20) as http:
+
+            response = await http.get(
+                url,
+                params=params
+            )
 
         data = response.json()
 
-        organic = data.get(
-            "organic_results",
-            []
-        )
+        organic = data.get("organic_results", [])
 
-        print(
-            "ORGANIC COUNT:",
-            len(organic)
-        )
+        print(f"ORGANIC COUNT: {len(organic)}")
 
         return {
             "source": source,
@@ -221,217 +297,91 @@ async def single_search(http, source, query):
 
     except Exception as e:
 
-        print(f"SEARCH ERROR: {e}")
+        print("SEARCH ERROR:")
+        print(e)
 
         return {
             "source": source,
             "data": {}
         }
 
-async def serp_search(query):
-
-    searches = [
-
-        {
-            "source": "DBA",
-            "query":
-            f"{query} DBA"
-        },
-
-        {
-            "source": "Marketplace",
-            "query":
-            f"site:facebook.com/marketplace {query} Danmark"
-        },
-
-        {
-            "source": "GulogGratis",
-            "query":
-            f"{query} GulogGratis"
-        },
-
-        {
-            "source": "Lauritz",
-            "query":
-            f"{query} Lauritz solgt"
-        }
-
-    ]
-
-    async with httpx.AsyncClient(
-        timeout=20
-    ) as http:
-
-        tasks = [
-
-            single_search(
-                http,
-                item["source"],
-                item["query"]
-            )
-
-            for item in searches
-
-        ]
-
-        results = await asyncio.gather(
-            *tasks
-        )
-
-    return results
-
 # ---------------------------------------------------
 # EXTRACT PRICES
 # ---------------------------------------------------
 
-def extract_prices(source, data):
+def extract_prices(result):
+
+    source = result["source"]
+    data = result["data"]
 
     prices = []
 
-    texts = []
+    organic = data.get("organic_results", [])
 
-    bad_words = [
+    text_parts = []
 
-        "current bid",
+    for item in organic:
 
-        "next bid",
+        text_parts.append(item.get("title", ""))
+        text_parts.append(item.get("snippet", ""))
 
-        "estimate",
-
-        "vurdering",
-
-        "starting bid",
-
-        "minimum bid"
-
-    ]
-
-    lauritz_good_words = [
-
-        "solgt for",
-
-        "hammer price",
-
-        "hammerslag",
-
-        "final price"
-
-    ]
-
-    for result in data.get(
-        "organic_results",
-        []
-    ):
-
-        title = result.get(
-            "title",
-            ""
-        )
-
-        snippet = result.get(
-            "snippet",
-            ""
-        )
-
-        lower = (
-            title + " " + snippet
-        ).lower()
-
-        # -----------------------------------
-        # SKIP DBA CATEGORY PAGES
-        # -----------------------------------
-
-        if "På DBA finder du" in snippet:
-            continue
-
-        # -----------------------------------
-        # SKIP BAD AUCTION WORDS
-        # -----------------------------------
-
-        if any(
-            word in lower
-            for word in bad_words
-        ):
-            continue
-
-        # -----------------------------------
-        # LAURITZ RULES
-        # -----------------------------------
-
-        if source == "Lauritz":
-
-            if not any(
-                word in lower
-                for word in lauritz_good_words
-            ):
-                continue
-
-        texts.append(title)
-
-        texts.append(snippet)
-
-    combined = " ".join(texts)
-
-    # -----------------------------------
-    # REMOVE SIZE REFERENCES
-    # -----------------------------------
-
-    combined = re.sub(
-
-        r'(str\.?|størrelse)\s*[a-zA-Z0-9]+',
-
-        '',
-
-        combined,
-
-        flags=re.IGNORECASE
-
-    )
+    combined = " ".join(text_parts)
 
     print("=" * 40)
     print(f"RAW SEARCH TEXT [{source}]")
     print("=" * 40)
+    print(combined[:6000])
 
-    print(combined[:4000])
+    combined = combined.lower()
 
     patterns = [
 
-        r'(\d{2,5})\s?kr',
+        r"(\d{1,3}(?:[.,]\d{3})*)\s?kr",
 
-        r'(\d{2,5})\s?kroner',
+        r"dkk\s?(\d{1,3}(?:[.,]\d{3})*)",
 
-        r'kr\.?\s?(\d{2,5})',
+        r"(\d{1,3}(?:[.,]\d{3})*)\s?dkk"
+    ]
 
-        r'(\d{2,5}),-',
-
-        r'(\d{2,5})\s?dkk'
+    blocked_before = [
+        "str",
+        "størrelse",
+        "size",
+        "nr",
+        "model"
     ]
 
     for pattern in patterns:
 
-        matches = re.findall(
-            pattern,
-            combined,
-            flags=re.IGNORECASE
-        )
+        matches = re.finditer(pattern, combined)
 
-        for m in matches:
+        for match in matches:
 
             try:
 
-                price = int(m)
+                start = max(0, match.start() - 15)
 
-                if 50 <= price <= 50000:
+                context = combined[start:match.start()]
+
+                if any(word in context for word in blocked_before):
+                    continue
+
+                raw = match.group(1)
+
+                raw = raw.replace(".", "")
+                raw = raw.replace(",", "")
+
+                price = int(raw)
+
+                if 50 <= price <= 250000:
                     prices.append(price)
 
             except:
                 pass
 
-    prices = sorted(
-        list(set(prices))
-    )
+    prices = sorted(list(set(prices)))
 
-    print(f"FOUND [{source}]:", prices)
+    print(f"FOUND [{source}]: {prices}")
 
     return prices
 
@@ -441,25 +391,15 @@ def extract_prices(source, data):
 
 def clean_prices(prices):
 
-    if not prices:
-        return []
-
-    if len(prices) < 3:
+    if len(prices) < 4:
         return prices
 
-    median = statistics.median(
-        prices
-    )
+    median = statistics.median(prices)
 
     filtered = [
-
         p for p in prices
-
-        if median * 0.4 <= p <= median * 2.5
-
+        if median * 0.45 <= p <= median * 2.2
     ]
-
-    print("FILTERED:", filtered)
 
     return filtered
 
@@ -472,24 +412,21 @@ def build_price(prices):
     if not prices:
         return "Ukendt pris"
 
-    median = int(
-        statistics.median(prices)
-    )
+    median = statistics.median(prices)
 
-    rounded = (
-        round(median / 50) * 50
-    )
+    if median < 200:
+        rounded = round(median / 10) * 10
+    else:
+        rounded = round(median / 50) * 50
 
-    return f"{rounded} kr"
+    return f"{int(rounded)} kr"
 
 # ---------------------------------------------------
 # ANALYZE
 # ---------------------------------------------------
 
 @app.post("/analyze")
-async def analyze(
-    file: UploadFile = File(...)
-):
+async def analyze(file: UploadFile = File(...)):
 
     try:
 
@@ -499,85 +436,63 @@ async def analyze(
 
         image_bytes = await file.read()
 
-        optimized = optimize_image(
-            image_bytes
+        optimized = optimize_image(image_bytes)
+
+        # Vision Web Detection
+        web_entities = await detect_web_entities(
+            optimized
         )
 
+        # Gemini
         vision = await analyze_image(
-            optimized
+            optimized,
+            web_entities
         )
 
         print("VISION:", vision)
 
-        title = vision.get(
-            "title",
-            "Ukendt objekt"
-        )
+        title = vision.get("title", "Ukendt")
+        category = vision.get("category", "Andet")
+        condition = vision.get("condition", "")
+        search_term = vision.get("search_term", title)
 
-        category = vision.get(
-            "category",
-            ""
-        )
+        tasks = [
 
-        condition = vision.get(
-            "condition",
-            ""
-        )
+            serp_search(search_term, "DBA"),
+            serp_search(search_term, "Marketplace"),
+            serp_search(search_term, "Lauritz"),
+            serp_search(search_term, "GulogGratis")
+        ]
 
-        search_term = vision.get(
-            "search_term",
-            title
-        )
-
-        results = await serp_search(
-            search_term
-        )
+        results = await asyncio.gather(*tasks)
 
         all_prices = []
 
         for result in results:
 
-            source = result["source"]
+            prices = extract_prices(result)
 
-            data = result["data"]
+            all_prices.extend(prices)
 
-            found = extract_prices(
-                source,
-                data
-            )
-
-            all_prices.extend(found)
-
-        all_prices = sorted(
-            list(set(all_prices))
-        )
+        all_prices = sorted(list(set(all_prices)))
 
         print("ALL:", all_prices)
 
-        cleaned = clean_prices(
-            all_prices
-        )
+        filtered = clean_prices(all_prices)
+
+        print("FILTERED:", filtered)
 
         return {
-
             "title": title,
-
             "category": category,
-
             "condition": condition,
-
-            "price": build_price(
-                cleaned
-            ),
-
-            "matches": len(cleaned)
-
+            "price": build_price(filtered)
         }
 
     except Exception as e:
 
         print("=" * 40)
-        print("FULL ERROR")
+        print("FATAL ERROR")
         print("=" * 40)
 
         traceback.print_exc()
