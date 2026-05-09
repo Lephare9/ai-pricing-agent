@@ -170,11 +170,25 @@ async def serp_search(query):
 
     searches = [
 
-        f"{query} DBA",
+        {
+            "source": "DBA",
+            "query": f"{query} DBA"
+        },
 
-        f"{query} Facebook Marketplace",
+        {
+            "source": "Marketplace",
+            "query": f"{query} Facebook Marketplace"
+        },
 
-        f"{query} GulogGratis"
+        {
+            "source": "GulogGratis",
+            "query": f"{query} GulogGratis"
+        },
+
+        {
+            "source": "Lauritz",
+            "query": f"{query} Lauritz solgt"
+        }
 
     ]
 
@@ -184,14 +198,16 @@ async def serp_search(query):
         timeout=20
     ) as http:
 
-        for q in searches:
+        for item in searches:
 
             print("=" * 40)
-            print(f"SEARCH: {q}")
+            print(
+                f"SEARCH: {item['query']}"
+            )
 
             params = {
                 "engine": "google",
-                "q": q,
+                "q": item["query"],
                 "api_key": SERPAPI_KEY,
                 "google_domain": "google.dk",
                 "gl": "dk",
@@ -218,11 +234,19 @@ async def serp_search(query):
                     len(organic)
                 )
 
-                results.append(data)
+                results.append({
+
+                    "source": item["source"],
+
+                    "data": data
+
+                })
 
             except Exception as e:
 
-                print(f"SEARCH ERROR: {e}")
+                print(
+                    f"SEARCH ERROR: {e}"
+                )
 
     return results
 
@@ -230,35 +254,96 @@ async def serp_search(query):
 # EXTRACT PRICES
 # ---------------------------------------------------
 
-def extract_prices(data):
+def extract_prices(source, data):
 
     prices = []
 
     texts = []
+
+    bad_words = [
+
+        "current bid",
+
+        "next bid",
+
+        "estimate",
+
+        "vurdering",
+
+        "starting bid",
+
+        "minimum bid"
+
+    ]
+
+    lauritz_good_words = [
+
+        "solgt for",
+
+        "hammer price",
+
+        "hammerslag",
+
+        "final price"
+
+    ]
 
     for result in data.get(
         "organic_results",
         []
     ):
 
+        title = result.get(
+            "title",
+            ""
+        )
+
         snippet = result.get(
             "snippet",
             ""
         )
 
+        lower = (
+            title + " " + snippet
+        ).lower()
+
+        # -----------------------------------
+        # SKIP DBA CATEGORY PAGES
+        # -----------------------------------
+
         if "På DBA finder du" in snippet:
             continue
 
-        texts.append(
-            result.get("title","")
-        )
+        # -----------------------------------
+        # SKIP BAD AUCTION WORDS
+        # -----------------------------------
+
+        if any(
+            word in lower
+            for word in bad_words
+        ):
+            continue
+
+        # -----------------------------------
+        # LAURITZ RULES
+        # -----------------------------------
+
+        if source == "Lauritz":
+
+            if not any(
+                word in lower
+                for word in lauritz_good_words
+            ):
+                continue
+
+        texts.append(title)
 
         texts.append(snippet)
 
     combined = " ".join(texts)
 
     print("=" * 40)
-    print("RAW SEARCH TEXT")
+    print(f"RAW SEARCH TEXT [{source}]")
     print("=" * 40)
 
     print(combined[:4000])
@@ -300,7 +385,7 @@ def extract_prices(data):
         list(set(prices))
     )
 
-    print("FOUND:", prices)
+    print(f"FOUND [{source}]:", prices)
 
     return prices
 
@@ -406,8 +491,13 @@ async def analyze(
 
         for result in results:
 
+            source = result["source"]
+
+            data = result["data"]
+
             found = extract_prices(
-                result
+                source,
+                data
             )
 
             all_prices.extend(found)
