@@ -65,7 +65,7 @@ HIGH_VALUE_DESIGN = [
     "gubi",
     "eames",
     "kartell",
-    "louis poulsen"
+    "louis poulsen",
 ]
 
 HIGH_VALUE_FURNITURE = [
@@ -75,7 +75,7 @@ HIGH_VALUE_FURNITURE = [
     "sofa",
     "bord",
     "spisebord",
-    "designerstol"
+    "designerstol",
 ]
 
 # ---------------------------------------------------
@@ -602,6 +602,7 @@ def validate_design_prediction(
             detected_brand = brand
             break
 
+    # ingen designer fundet
     if not detected_brand:
         return title
 
@@ -613,36 +614,64 @@ def validate_design_prediction(
     if not is_furniture:
         return title
 
-    if median_price < 1200:
+    # ---------------------------------------------------
+    # HØJ CONFIDENCE
+    # ---------------------------------------------------
+
+    if median_price >= 1800:
 
         print("=" * 40)
-        print("DESIGN REJECTED")
-        print(
-            f"{detected_brand} rejected "
-            f"(median {median_price})"
-        )
+        print("DESIGN CONFIDENCE: HIGH")
         print("=" * 40)
 
-        cleaned = title
+        return title
 
-        for brand in HIGH_VALUE_DESIGN:
+    # ---------------------------------------------------
+    # MEDIUM CONFIDENCE
+    # ---------------------------------------------------
 
-            cleaned = re.sub(
-                brand,
-                "",
-                cleaned,
-                flags=re.IGNORECASE
-            )
+    if 1000 <= median_price < 1800:
+
+        print("=" * 40)
+        print("DESIGN CONFIDENCE: MEDIUM")
+        print("=" * 40)
+
+        if not title.lower().startswith("muligvis"):
+
+            return f"Muligvis {title}"
+
+        return title
+
+    # ---------------------------------------------------
+    # LOW CONFIDENCE
+    # ---------------------------------------------------
+
+    print("=" * 40)
+    print("DESIGN CONFIDENCE: LOW")
+    print(
+        f"{detected_brand} downgraded "
+        f"(median {median_price})"
+    )
+    print("=" * 40)
+
+    cleaned = title
+
+    for brand in HIGH_VALUE_DESIGN:
 
         cleaned = re.sub(
-            r"\s+",
-            " ",
-            cleaned
-        ).strip()
+            brand,
+            "",
+            cleaned,
+            flags=re.IGNORECASE
+        )
 
-        return cleaned
+    cleaned = re.sub(
+        r"\s+",
+        " ",
+        cleaned
+    ).strip()
 
-    return title
+    return f"{cleaned} (muligt design)"
 
 # ---------------------------------------------------
 # ANALYZE
