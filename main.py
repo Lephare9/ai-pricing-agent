@@ -75,6 +75,31 @@ HIGH_VALUE_FURNITURE = [
 ]
 
 # ---------------------------------------------------
+# STRONG DESIGN DETECTION
+# ---------------------------------------------------
+
+DESIGN_KEYWORDS = [
+    "fritz hansen",
+    "arne jacobsen",
+    "wegner",
+    "hans wegner",
+    "hay",
+    "mater",
+    "eames",
+    "kartell",
+    "louis poulsen",
+    "montana",
+    "gubi",
+    "børge mogensen",
+    "ph lamp",
+    "panthella",
+    "series 7",
+    "syver stol",
+    "ant chair",
+    "myren",
+]
+
+# ---------------------------------------------------
 # SEARCH CLEANUP
 # ---------------------------------------------------
 
@@ -269,16 +294,77 @@ async def detect_web_entities(image_bytes):
         return []
 
 # ---------------------------------------------------
+# STRONG DESIGN MATCH
+# ---------------------------------------------------
+
+def extract_strong_design_match(web_entities):
+
+    if not web_entities:
+        return None
+
+    best_match = None
+    best_score = 0
+
+    for entity in web_entities:
+
+        name = entity.get("name", "").lower()
+        score = entity.get("score", 0)
+
+        for keyword in DESIGN_KEYWORDS:
+
+            if keyword in name and score >= 0.80:
+
+                if score > best_score:
+
+                    best_match = name
+                    best_score = score
+
+    if best_match:
+
+        print("=" * 40)
+        print("STRONG DESIGN MATCH")
+        print(best_match)
+        print(best_score)
+        print("=" * 40)
+
+    return best_match
+
+# ---------------------------------------------------
 # GEMINI ANALYZE
 # ---------------------------------------------------
 
-async def analyze_image(image_bytes, web_entities):
+async def analyze_image(
+    image_bytes,
+    web_entities,
+    strong_design_match=None
+):
+
+    design_hint = ""
+
+    if strong_design_match:
+
+        design_hint = f"""
+
+VIGTIGT:
+Google Vision har med høj sikkerhed fundet:
+{strong_design_match}
+
+Dette skal prioriteres meget højt.
+
+Hvis det matcher objektet visuelt:
+- brug designnavnet
+- brug brandnavnet
+- brug modelnavnet
+- brug det i search_term
+"""
 
     prompt = f"""
 Du analyserer brugte genstande i Danmark.
 
 Google Vision entities:
 {web_entities}
+
+{design_hint}
 
 VIGTIGT:
 
@@ -298,11 +384,6 @@ Brug IKKE:
 - tekniske beskrivelser
 
 Brug simple folkelige ord.
-
-Eksempel:
-- "formspændt stol" → "spisebordsstol"
-- "modulsofa" → "sofa"
-- "skulpturel lampe" → "bordlampe"
 
 Search_term må IKKE indeholde:
 - farver
@@ -354,7 +435,6 @@ def get_sources(category):
 
     category = category.lower()
 
-    # TØJ
     if any(word in category for word in [
         "jakke",
         "tøj",
@@ -371,7 +451,6 @@ def get_sources(category):
             "DBA"
         ]
 
-    # MØBLER
     if any(word in category for word in [
         "sofa",
         "stol",
@@ -389,7 +468,6 @@ def get_sources(category):
             "Lauritz"
         ]
 
-    # DESIGN / KUNST
     if any(word in category for word in [
         "kunst",
         "litografi",
@@ -404,7 +482,6 @@ def get_sources(category):
             "DBA"
         ]
 
-    # DEFAULT
     return [
         "DBA",
         "Marketplace",
@@ -585,18 +662,11 @@ def clean_prices(prices):
 
     if len(filtered) < 2:
 
-        print("=" * 40)
-        print("FILTER TOO AGGRESSIVE")
-        print("USING ORIGINAL PRICES")
-        print("=" * 40)
-
         return sorted(prices)
 
     filtered = sorted(list(set(filtered)))
 
-    print("=" * 40)
     print("FILTERED:", filtered)
-    print("=" * 40)
 
     return filtered
 
@@ -626,13 +696,11 @@ def build_price_range(prices):
         low = median * 0.85
         high = median * 1.15
 
-    # bredere interval ved få priser
     if len(prices) <= 3:
 
         low *= 0.9
         high *= 1.1
 
-    # rounding
     if median < 200:
 
         low = round(low / 10) * 10
@@ -647,99 +715,6 @@ def build_price_range(prices):
     high = int(high)
 
     return f"{low}-{high} kr"
-
-# ---------------------------------------------------
-# DESIGN VALIDATION
-# ---------------------------------------------------
-
-def validate_design_prediction(
-    title,
-    category,
-    median_price
-):
-
-    if not median_price:
-        return title
-
-    title_lower = title.lower()
-    category_lower = category.lower()
-
-    detected_brand = None
-
-    for brand in HIGH_VALUE_DESIGN:
-
-        if brand in title_lower:
-            detected_brand = brand
-            break
-
-    if not detected_brand:
-        return title
-
-    is_furniture = any(
-        word in category_lower
-        for word in HIGH_VALUE_FURNITURE
-    )
-
-    if not is_furniture:
-        return title
-
-    if median_price >= 1800:
-        return title
-
-    if 1000 <= median_price < 1800:
-
-        if not title.lower().startswith("muligvis"):
-            return f"Muligvis {title}"
-
-        return title
-
-    cleaned = title
-
-    for brand in HIGH_VALUE_DESIGN:
-
-        cleaned = re.sub(
-            brand,
-            "",
-            cleaned,
-            flags=re.IGNORECASE
-        )
-
-    cleaned = re.sub(
-        r"\s+",
-        " ",
-        cleaned
-    ).strip()
-
-    return f"{cleaned} (muligt design)"
-
-# ---------------------------------------------------
-# EARLY STOP
-# ---------------------------------------------------
-
-def enough_prices(prices):
-
-    if len(prices) < 6:
-        return False
-
-    median = statistics.median(prices)
-
-    deviations = []
-
-    for price in prices:
-
-        deviation = abs(price - median) / median
-
-        deviations.append(deviation)
-
-    avg_dev = statistics.mean(deviations)
-
-    print("=" * 40)
-    print("EARLY STOP CHECK")
-    print(f"COUNT: {len(prices)}")
-    print(f"AVG DEV: {round(avg_dev, 2)}")
-    print("=" * 40)
-
-    return avg_dev < 0.35
 
 # ---------------------------------------------------
 # ANALYZE
@@ -762,9 +737,14 @@ async def analyze(file: UploadFile = File(...)):
             optimized
         )
 
+        strong_design_match = extract_strong_design_match(
+            web_entities
+        )
+
         vision = await analyze_image(
             optimized,
-            web_entities
+            web_entities,
+            strong_design_match
         )
 
         print("VISION:", vision)
@@ -792,7 +772,6 @@ async def analyze(file: UploadFile = File(...)):
 
         for source in sources:
 
-            # FIRST TRY → GOOGLE LIGHT
             result = await serp_search(
                 search_term,
                 source,
@@ -801,12 +780,7 @@ async def analyze(file: UploadFile = File(...)):
 
             prices = extract_prices(result)
 
-            # FALLBACK → NORMAL GOOGLE
             if len(prices) <= 1:
-
-                print("=" * 40)
-                print("FALLBACK TO GOOGLE")
-                print("=" * 40)
 
                 result = await serp_search(
                     search_term,
@@ -816,16 +790,10 @@ async def analyze(file: UploadFile = File(...)):
 
                 prices = extract_prices(result)
 
-            # FALLBACK → CATEGORY SEARCH
             if (
                 len(prices) <= 1
                 and search_term != category_search
             ):
-
-                print("=" * 40)
-                print("FALLBACK TO CATEGORY SEARCH")
-                print(f"{search_term} → {category_search}")
-                print("=" * 40)
 
                 result = await serp_search(
                     category_search,
@@ -843,32 +811,11 @@ async def analyze(file: UploadFile = File(...)):
 
             print("CURRENT PRICES:", all_prices)
 
-            # EARLY STOP
-            if enough_prices(all_prices):
-
-                print("=" * 40)
-                print("EARLY STOP ACTIVATED")
-                print("=" * 40)
-
-                break
-
         print("ALL:", all_prices)
 
         filtered = clean_prices(all_prices)
 
         price_range = build_price_range(filtered)
-
-        median_price = (
-            statistics.median(filtered)
-            if filtered
-            else None
-        )
-
-        title = validate_design_prediction(
-            title,
-            category,
-            median_price
-        )
 
         return {
             "title": title,
