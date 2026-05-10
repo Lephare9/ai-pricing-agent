@@ -107,20 +107,6 @@ REMOVE_WORDS = [
     "næsten ny",
 ]
 
-FURNITURE_WORDS = [
-    "spisebordsstol",
-    "lænestol",
-    "barstol",
-    "sofabænk",
-    "sofa",
-    "bord",
-    "stol",
-    "lampe",
-    "vase",
-    "puf",
-    "pendel",
-]
-
 # ---------------------------------------------------
 # SMART SEARCH ENRICHMENT
 # ---------------------------------------------------
@@ -133,6 +119,7 @@ MATERIAL_WORDS = [
     "glas",
     "messing",
     "marmor",
+    "rattan",
 ]
 
 CATEGORY_WORDS = [
@@ -495,6 +482,8 @@ async def dba_search(query):
         print(f"DBA SEARCH: {query}")
         print("=" * 40)
 
+        query_words = query.lower().split()
+
         url = (
             "https://www.dba.dk/recommerce/forsale/search"
             f"?q={query}"
@@ -521,23 +510,46 @@ async def dba_search(query):
         print(f"HTML LENGTH: {len(html)}")
         print("=" * 40)
 
-        matches = re.findall(
-            r"(\d{1,3}(?:\.\d{3})*)\s?kr",
-            html,
-            flags=re.IGNORECASE
-        )
+        # ---------------------------------------------------
+        # TITLE + PRICE MATCHING
+        # ---------------------------------------------------
 
         prices = []
 
-        for raw in matches:
+        listing_pattern = re.findall(
+            r'{"title":"(.*?)".*?"price":{"price":"(.*?)"',
+            html
+        )
+
+        print(f"LISTINGS FOUND: {len(listing_pattern)}")
+
+        for title, raw_price in listing_pattern:
 
             try:
 
-                raw = raw.replace(".", "")
-                price = int(raw)
+                title_lower = title.lower()
+
+                # REQUIRE ALL SEARCH WORDS
+                valid = all(
+                    word in title_lower
+                    for word in query_words
+                )
+
+                if not valid:
+                    continue
+
+                raw_price = raw_price.replace(".", "")
+                raw_price = raw_price.replace(",", "")
+
+                price = int(raw_price)
 
                 if 50 <= price <= 250000:
+
                     prices.append(price)
+
+                    print(
+                        f"VALID: {title} → {price}"
+                    )
 
             except:
                 pass
@@ -569,7 +581,6 @@ def clean_prices(prices):
     if len(prices) < 3:
         return sorted(prices)
 
-    # cluster around median
     median = statistics.median(prices)
 
     filtered = []
@@ -662,7 +673,7 @@ async def analyze(file: UploadFile = File(...)):
         )
 
         # ---------------------------------------------------
-        # DIRECT DBA SEARCH
+        # DIRECT DBA SCRAPE
         # ---------------------------------------------------
 
         prices = await dba_search(search_term)
