@@ -43,7 +43,7 @@ print("SERPAPI:", bool(SERPAPI_KEY))
 print("VISION:", bool(GOOGLE_VISION_API_KEY))
 
 # ---------------------------------------------------
-# GEMINI CLIENT
+# GEMINI
 # ---------------------------------------------------
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -289,8 +289,30 @@ VIGTIGT:
 - Fokusér kun på hovedobjektet
 - Ignorér baggrund
 - Gæt ikke designer hvis usikker
-- Search_term må IKKE indeholde:
-  farver, stand, størrelser eller pyntetekst
+
+MEGET VIGTIGT:
+
+search_term skal ligne almindelige ord
+fra DBA annoncer.
+
+Brug IKKE:
+- fagtermer
+- designtermer
+- arkitektord
+- tekniske beskrivelser
+
+Brug simple folkelige ord.
+
+Eksempel:
+- "formspændt stol" → "spisebordsstol"
+- "modulsofa" → "sofa"
+- "skulpturel lampe" → "bordlampe"
+
+Search_term må IKKE indeholde:
+- farver
+- stand
+- størrelser
+- pyntetekst
 
 Returnér KUN valid JSON:
 
@@ -298,7 +320,7 @@ Returnér KUN valid JSON:
   "title": "Kort titel",
   "category": "Kategori",
   "condition": "Kort vurdering",
-  "search_term": "Kort realistisk søgning"
+  "search_term": "Folkelig DBA søgning"
 }}
 """
 
@@ -337,7 +359,6 @@ def get_sources(category):
     category = category.lower()
 
     # TØJ
-    # kun Vinted/Trendsales + DBA
     if any(word in category for word in [
         "jakke",
         "tøj",
@@ -369,7 +390,7 @@ def get_sources(category):
             "Lauritz"
         ]
 
-    # KUNST / DESIGN
+    # DESIGN / KUNST
     if any(word in category for word in [
         "kunst",
         "litografi",
@@ -395,12 +416,13 @@ def get_sources(category):
 # SEARCH
 # ---------------------------------------------------
 
-async def serp_search(query, source):
+async def serp_search(query, source, engine="google_light"):
 
     try:
 
         print("=" * 40)
         print(f"SEARCH: {query} {source}")
+        print(f"ENGINE: {engine}")
         print("=" * 40)
 
         q = query
@@ -423,10 +445,7 @@ async def serp_search(query, source):
         url = "https://serpapi.com/search.json"
 
         params = {
-
-            # GOOGLE LIGHT
-            "engine": "google_light",
-
+            "engine": engine,
             "q": q,
             "api_key": SERPAPI_KEY,
             "google_domain": "google.dk",
@@ -625,11 +644,9 @@ def validate_design_prediction(
     if not is_furniture:
         return title
 
-    # høj confidence
     if median_price >= 1800:
         return title
 
-    # medium confidence
     if 1000 <= median_price < 1800:
 
         if not title.lower().startswith("muligvis"):
@@ -637,7 +654,6 @@ def validate_design_prediction(
 
         return title
 
-    # lav confidence
     cleaned = title
 
     for brand in HIGH_VALUE_DESIGN:
@@ -733,18 +749,31 @@ async def analyze(file: UploadFile = File(...)):
 
         all_prices = []
 
-        # ---------------------------------------------------
-        # STAGED SEARCH
-        # ---------------------------------------------------
-
         for source in sources:
 
+            # FIRST TRY → GOOGLE LIGHT
             result = await serp_search(
                 search_term,
-                source
+                source,
+                engine="google_light"
             )
 
             prices = extract_prices(result)
+
+            # FALLBACK → NORMAL GOOGLE
+            if len(prices) <= 1:
+
+                print("=" * 40)
+                print("FALLBACK TO GOOGLE")
+                print("=" * 40)
+
+                result = await serp_search(
+                    search_term,
+                    source,
+                    engine="google"
+                )
+
+                prices = extract_prices(result)
 
             all_prices.extend(prices)
 
@@ -782,7 +811,7 @@ async def analyze(file: UploadFile = File(...)):
             "price": (
                 f"{median_price} kr"
                 if median_price
-                else None
+                else "Ingen sikre priser fundet"
             )
         }
 
