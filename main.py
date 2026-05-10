@@ -604,7 +604,6 @@ def clean_prices(prices):
     print("=" * 40)
 
     return filtered
-
     
 
 # ---------------------------------------------------
