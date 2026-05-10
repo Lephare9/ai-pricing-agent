@@ -6,7 +6,6 @@ from google import genai
 from google.genai import types
 
 from PIL import Image
-from bs4 import BeautifulSoup
 
 import statistics
 import traceback
@@ -119,6 +118,33 @@ FURNITURE_WORDS = [
     "lampe",
     "vase",
     "puf",
+    "pendel",
+]
+
+# ---------------------------------------------------
+# SMART SEARCH ENRICHMENT
+# ---------------------------------------------------
+
+MATERIAL_WORDS = [
+    "læder",
+    "teak",
+    "eg",
+    "keramik",
+    "glas",
+    "messing",
+    "marmor",
+]
+
+CATEGORY_WORDS = [
+    "sofa",
+    "stol",
+    "bord",
+    "lampe",
+    "vase",
+    "reol",
+    "lænestol",
+    "spisebord",
+    "pendel",
 ]
 
 # ---------------------------------------------------
@@ -167,7 +193,6 @@ def optimize_search_term(search_term):
 
     search_term = search_term.lower()
 
-    # simple replacements
     replacements = {
         "formspændt stol": "spisebordsstol",
         "sofabænk": "sofa",
@@ -177,7 +202,6 @@ def optimize_search_term(search_term):
     for old, new in replacements.items():
         search_term = search_term.replace(old, new)
 
-    # remove colors
     for color in COLORS:
 
         search_term = re.sub(
@@ -187,7 +211,6 @@ def optimize_search_term(search_term):
             flags=re.IGNORECASE
         )
 
-    # remove noise
     for word in REMOVE_WORDS:
 
         search_term = re.sub(
@@ -203,19 +226,10 @@ def optimize_search_term(search_term):
         search_term
     ).strip()
 
-    # keep only first useful furniture word
-    for word in FURNITURE_WORDS:
-
-        if word in search_term:
-
-            search_term = word
-            break
-
-    # max 2 words
     parts = search_term.split()
 
-    if len(parts) > 2:
-        search_term = " ".join(parts[:2])
+    if len(parts) > 3:
+        search_term = " ".join(parts[:3])
 
     print("=" * 40)
     print("SEARCH OPTIMIZATION")
@@ -224,6 +238,58 @@ def optimize_search_term(search_term):
     print("=" * 40)
 
     return search_term
+
+# ---------------------------------------------------
+# SMART SEARCH TERM
+# ---------------------------------------------------
+
+def build_smart_search_term(search_term):
+
+    search_term = search_term.lower()
+
+    words = search_term.split()
+
+    category = None
+    material = None
+
+    for word in CATEGORY_WORDS:
+
+        if word in words:
+            category = word
+            break
+
+    for word in MATERIAL_WORDS:
+
+        if word in words:
+            material = word
+            break
+
+    if category and material:
+
+        if material == "læder" and category == "sofa":
+            final_term = "lædersofa"
+
+        elif material == "keramik" and category == "lampe":
+            final_term = "keramiklampe"
+
+        else:
+            final_term = f"{material} {category}"
+
+    elif category:
+
+        final_term = category
+
+    else:
+
+        final_term = search_term
+
+    print("=" * 40)
+    print("SMART SEARCH")
+    print(f"INPUT: {search_term}")
+    print(f"OUTPUT: {final_term}")
+    print("=" * 40)
+
+    return final_term
 
 # ---------------------------------------------------
 # GOOGLE VISION
@@ -379,7 +445,6 @@ Brug simple ord.
 Brug IKKE:
 - farver
 - stand
-- materialer
 - tekniske beskrivelser
 
 Returnér KUN valid JSON:
@@ -456,8 +521,6 @@ async def dba_search(query):
         print(f"HTML LENGTH: {len(html)}")
         print("=" * 40)
 
-        soup = BeautifulSoup(html, "html.parser")
-
         matches = re.findall(
             r"(\d{1,3}(?:\.\d{3})*)\s?kr",
             html,
@@ -506,6 +569,7 @@ def clean_prices(prices):
     if len(prices) < 3:
         return sorted(prices)
 
+    # cluster around median
     median = statistics.median(prices)
 
     filtered = []
@@ -593,8 +657,12 @@ async def analyze(file: UploadFile = File(...)):
             raw_search_term
         )
 
+        search_term = build_smart_search_term(
+            search_term
+        )
+
         # ---------------------------------------------------
-        # DIRECT DBA SCRAPE
+        # DIRECT DBA SEARCH
         # ---------------------------------------------------
 
         prices = await dba_search(search_term)
