@@ -7,7 +7,6 @@ from google.genai import types
 
 from PIL import Image
 
-import asyncio
 import statistics
 import traceback
 import httpx
@@ -111,11 +110,6 @@ REMOVE_WORDS = [
     "næsten ny",
 ]
 
-KEEP_WORDS = [
-    "retro",
-    "vintage",
-]
-
 # ---------------------------------------------------
 # ROOT
 # ---------------------------------------------------
@@ -162,6 +156,7 @@ def optimize_search_term(search_term):
 
     search_term = search_term.lower()
 
+    # fjern farver
     for color in COLORS:
 
         search_term = re.sub(
@@ -171,23 +166,24 @@ def optimize_search_term(search_term):
             flags=re.IGNORECASE
         )
 
+    # fjern støj
     for word in REMOVE_WORDS:
 
-        if word not in KEEP_WORDS:
+        search_term = re.sub(
+            rf"\b{re.escape(word)}\b",
+            "",
+            search_term,
+            flags=re.IGNORECASE
+        )
 
-            search_term = re.sub(
-                rf"\b{re.escape(word)}\b",
-                "",
-                search_term,
-                flags=re.IGNORECASE
-            )
-
+    # cleanup
     search_term = re.sub(
         r"\s+",
         " ",
         search_term
     ).strip()
 
+    # max 3 ord
     parts = search_term.split()
 
     if len(parts) > 3:
@@ -293,9 +289,10 @@ VIGTIGT:
 - Fokusér kun på hovedobjektet
 - Ignorér baggrund
 - Gæt ikke designer hvis usikker
-- Returnér KUN valid JSON
+- Search_term må IKKE indeholde:
+  farver, stand, størrelser eller pyntetekst
 
-Format:
+Returnér KUN valid JSON:
 
 {{
   "title": "Kort titel",
@@ -339,20 +336,25 @@ def get_sources(category):
 
     category = category.lower()
 
+    # TØJ
+    # kun Vinted/Trendsales + DBA
     if any(word in category for word in [
         "jakke",
         "tøj",
         "blazer",
         "sko",
-        "mode"
+        "mode",
+        "kjole",
+        "shirt",
+        "bukser"
     ]):
 
         return [
-            "DBA",
-            "Marketplace",
-            "Trendsales"
+            "Trendsales",
+            "DBA"
         ]
 
+    # MØBLER
     if any(word in category for word in [
         "sofa",
         "stol",
@@ -367,6 +369,22 @@ def get_sources(category):
             "Lauritz"
         ]
 
+    # KUNST / DESIGN
+    if any(word in category for word in [
+        "kunst",
+        "litografi",
+        "plakat",
+        "maleri",
+        "lampe",
+        "vase"
+    ]):
+
+        return [
+            "Lauritz",
+            "DBA"
+        ]
+
+    # DEFAULT
     return [
         "DBA",
         "Marketplace",
@@ -405,7 +423,10 @@ async def serp_search(query, source):
         url = "https://serpapi.com/search.json"
 
         params = {
-            "engine": "google",
+
+            # GOOGLE LIGHT
+            "engine": "google_light",
+
             "q": q,
             "api_key": SERPAPI_KEY,
             "google_domain": "google.dk",
@@ -604,9 +625,11 @@ def validate_design_prediction(
     if not is_furniture:
         return title
 
+    # høj confidence
     if median_price >= 1800:
         return title
 
+    # medium confidence
     if 1000 <= median_price < 1800:
 
         if not title.lower().startswith("muligvis"):
@@ -614,6 +637,7 @@ def validate_design_prediction(
 
         return title
 
+    # lav confidence
     cleaned = title
 
     for brand in HIGH_VALUE_DESIGN:
@@ -632,6 +656,35 @@ def validate_design_prediction(
     ).strip()
 
     return f"{cleaned} (muligt design)"
+
+# ---------------------------------------------------
+# EARLY STOP
+# ---------------------------------------------------
+
+def enough_prices(prices):
+
+    if len(prices) < 6:
+        return False
+
+    median = statistics.median(prices)
+
+    deviations = []
+
+    for price in prices:
+
+        deviation = abs(price - median) / median
+
+        deviations.append(deviation)
+
+    avg_dev = statistics.mean(deviations)
+
+    print("=" * 40)
+    print("EARLY STOP CHECK")
+    print(f"COUNT: {len(prices)}")
+    print(f"AVG DEV: {round(avg_dev, 2)}")
+    print("=" * 40)
+
+    return avg_dev < 0.35
 
 # ---------------------------------------------------
 # ANALYZE
@@ -678,25 +731,37 @@ async def analyze(file: UploadFile = File(...)):
 
         print("SOURCES:", sources)
 
-        tasks = []
+        all_prices = []
+
+        # ---------------------------------------------------
+        # STAGED SEARCH
+        # ---------------------------------------------------
 
         for source in sources:
 
-            tasks.append(
-                serp_search(search_term, source)
+            result = await serp_search(
+                search_term,
+                source
             )
-
-        results = await asyncio.gather(*tasks)
-
-        all_prices = []
-
-        for result in results:
 
             prices = extract_prices(result)
 
             all_prices.extend(prices)
 
-        all_prices = sorted(list(set(all_prices)))
+            all_prices = sorted(
+                list(set(all_prices))
+            )
+
+            print("CURRENT PRICES:", all_prices)
+
+            # EARLY STOP
+            if enough_prices(all_prices):
+
+                print("=" * 40)
+                print("EARLY STOP ACTIVATED")
+                print("=" * 40)
+
+                break
 
         print("ALL:", all_prices)
 
