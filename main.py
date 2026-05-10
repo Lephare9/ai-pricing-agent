@@ -565,7 +565,8 @@ def clean_prices(prices):
     if not prices:
         return []
 
-    if len(prices) <= 4:
+    # filtrér allerede fra 3 priser
+    if len(prices) < 3:
         return sorted(prices)
 
     median = statistics.median(prices)
@@ -576,20 +577,35 @@ def clean_prices(prices):
 
         deviation = abs(price - median) / median
 
-        if deviation <= 1.0:
+        # strammere symmetrisk filtering
+        # både høje og lave outliers fjernes
+        if deviation <= 0.6:
+
             filtered.append(price)
 
         else:
+
             print(f"OUTLIER REMOVED: {price}")
 
+    # fallback hvis filtering blev for aggressivt
     if len(filtered) < 2:
+
+        print("=" * 40)
+        print("FILTER TOO AGGRESSIVE")
+        print("USING ORIGINAL PRICES")
+        print("=" * 40)
+
         return sorted(prices)
 
     filtered = sorted(list(set(filtered)))
 
+    print("=" * 40)
     print("FILTERED:", filtered)
+    print("=" * 40)
 
     return filtered
+
+    
 
 # ---------------------------------------------------
 # BUILD PRICE
