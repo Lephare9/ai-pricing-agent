@@ -237,10 +237,6 @@ def build_smart_search_term(search_term):
     category = None
     material = None
 
-    # IMPORTANT:
-    # use full string match
-    # not split words
-
     for word in CATEGORY_WORDS:
 
         if word in search_term:
@@ -259,7 +255,8 @@ def build_smart_search_term(search_term):
     print(f"MATERIAL: {material}")
     print("=" * 40)
 
-    if category and material:
+    # MATERIAL IS IMPORTANT
+    if material and category:
 
         if material == "læder" and category == "sofa":
             final_term = "lædersofa"
@@ -490,8 +487,6 @@ async def dba_search(query):
         print(f"DBA SEARCH: {query}")
         print("=" * 40)
 
-        query_words = query.lower().split()
-
         url = (
             "https://www.dba.dk/recommerce/forsale/search"
             f"?q={query}"
@@ -518,42 +513,26 @@ async def dba_search(query):
         print(f"HTML LENGTH: {len(html)}")
         print("=" * 40)
 
-        prices = []
-
-        listing_pattern = re.findall(
-            r'{"title":"(.*?)".*?"price":{"price":"(.*?)"',
-            html
+        # SIMPLE GLOBAL PRICE EXTRACTION
+        matches = re.findall(
+            r"(\d{1,3}(?:\.\d{3})*)\s?kr",
+            html,
+            flags=re.IGNORECASE
         )
 
-        print(f"LISTINGS FOUND: {len(listing_pattern)}")
+        prices = []
 
-        for title, raw_price in listing_pattern:
+        for raw in matches:
 
             try:
 
-                title_lower = title.lower()
+                raw = raw.replace(".", "")
+                raw = raw.replace(",", "")
 
-                # REQUIRE ALL SEARCH WORDS
-                valid = all(
-                    word in title_lower
-                    for word in query_words
-                )
-
-                if not valid:
-                    continue
-
-                raw_price = raw_price.replace(".", "")
-                raw_price = raw_price.replace(",", "")
-
-                price = int(raw_price)
+                price = int(raw)
 
                 if 50 <= price <= 250000:
-
                     prices.append(price)
-
-                    print(
-                        f"VALID: {title} → {price}"
-                    )
 
             except:
                 pass
