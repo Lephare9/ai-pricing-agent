@@ -234,22 +234,30 @@ def build_smart_search_term(search_term):
 
     search_term = search_term.lower()
 
-    words = search_term.split()
-
     category = None
     material = None
 
+    # IMPORTANT:
+    # use full string match
+    # not split words
+
     for word in CATEGORY_WORDS:
 
-        if word in words:
+        if word in search_term:
             category = word
             break
 
     for word in MATERIAL_WORDS:
 
-        if word in words:
+        if word in search_term:
             material = word
             break
+
+    print("=" * 40)
+    print("SMART SEARCH DEBUG")
+    print(f"CATEGORY: {category}")
+    print(f"MATERIAL: {material}")
+    print("=" * 40)
 
     if category and material:
 
@@ -510,10 +518,6 @@ async def dba_search(query):
         print(f"HTML LENGTH: {len(html)}")
         print("=" * 40)
 
-        # ---------------------------------------------------
-        # TITLE + PRICE MATCHING
-        # ---------------------------------------------------
-
         prices = []
 
         listing_pattern = re.findall(
@@ -671,10 +675,6 @@ async def analyze(file: UploadFile = File(...)):
         search_term = build_smart_search_term(
             search_term
         )
-
-        # ---------------------------------------------------
-        # DIRECT DBA SCRAPE
-        # ---------------------------------------------------
 
         prices = await dba_search(search_term)
 
