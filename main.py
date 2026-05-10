@@ -50,7 +50,7 @@ print("VISION:", bool(GOOGLE_VISION_API_KEY))
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------
-# DESIGNER BRANDS
+# DESIGN BRANDS
 # ---------------------------------------------------
 
 HIGH_VALUE_DESIGN = [
@@ -60,7 +60,6 @@ HIGH_VALUE_DESIGN = [
     "fritz hansen",
     "carl hansen",
     "pp møbler",
-    "boconcept",
     "montana",
     "gubi",
     "eames",
@@ -70,12 +69,51 @@ HIGH_VALUE_DESIGN = [
 
 HIGH_VALUE_FURNITURE = [
     "stol",
-    "lænestol",
     "barstol",
+    "lænestol",
     "sofa",
     "bord",
-    "spisebord",
-    "designerstol",
+]
+
+# ---------------------------------------------------
+# SEARCH CLEANUP
+# ---------------------------------------------------
+
+COLORS = [
+    "sort",
+    "hvid",
+    "grå",
+    "grøn",
+    "gul",
+    "sennepsgul",
+    "blå",
+    "brun",
+    "beige",
+    "rød",
+    "orange",
+    "lilla",
+    "pink",
+    "sølv",
+    "guld",
+    "kobber",
+]
+
+REMOVE_WORDS = [
+    "god stand",
+    "flot stand",
+    "brugt",
+    "flot",
+    "velholdt",
+    "unik",
+    "sjælden",
+    "smuk",
+    "patina",
+    "næsten ny",
+]
+
+KEEP_WORDS = [
+    "retro",
+    "vintage",
 ]
 
 # ---------------------------------------------------
@@ -115,16 +153,61 @@ def optimize_image(image_bytes):
     return optimized
 
 # ---------------------------------------------------
+# SEARCH TERM OPTIMIZE
+# ---------------------------------------------------
+
+def optimize_search_term(search_term):
+
+    original = search_term
+
+    search_term = search_term.lower()
+
+    for color in COLORS:
+
+        search_term = re.sub(
+            rf"\b{color}\b",
+            "",
+            search_term,
+            flags=re.IGNORECASE
+        )
+
+    for word in REMOVE_WORDS:
+
+        if word not in KEEP_WORDS:
+
+            search_term = re.sub(
+                rf"\b{re.escape(word)}\b",
+                "",
+                search_term,
+                flags=re.IGNORECASE
+            )
+
+    search_term = re.sub(
+        r"\s+",
+        " ",
+        search_term
+    ).strip()
+
+    parts = search_term.split()
+
+    if len(parts) > 3:
+        search_term = " ".join(parts[:3])
+
+    print("=" * 40)
+    print("SEARCH OPTIMIZATION")
+    print(f"ORIGINAL: {original}")
+    print(f"OPTIMIZED: {search_term}")
+    print("=" * 40)
+
+    return search_term
+
+# ---------------------------------------------------
 # GOOGLE VISION WEB DETECTION
 # ---------------------------------------------------
 
 async def detect_web_entities(image_bytes):
 
     try:
-
-        print("=" * 40)
-        print("VISION WEB DETECTION")
-        print("=" * 40)
 
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -183,15 +266,13 @@ async def detect_web_entities(image_bytes):
         except:
             pass
 
-        print("WEB ENTITIES:")
-        print(entities)
+        print("WEB ENTITIES:", entities)
 
         return entities
 
     except Exception as e:
 
-        print("VISION ERROR:")
-        print(e)
+        print("VISION ERROR:", e)
 
         return []
 
@@ -209,71 +290,46 @@ Google Vision entities:
 
 VIGTIGT:
 
-- Ignorér objekter i baggrunden
-- Fokusér KUN på hovedobjektet i centrum
-- Gæt ALDRIG designer eller brand hvis du er usikker
-- Brug kun designer/brand hvis sandsynligheden er høj
-- Hvis du er usikker:
-  brug generisk titel i stedet
+- Fokusér kun på hovedobjektet
+- Ignorér baggrund
+- Gæt ikke designer hvis usikker
+- Returnér KUN valid JSON
 
-Returnér KUN valid JSON:
+Format:
 
 {{
-  "title": "Kort præcist navn",
+  "title": "Kort titel",
   "category": "Kategori",
-  "condition": "Kort vurdering af stand og evt fejl",
-  "search_term": "Meget præcis DBA søgning"
+  "condition": "Kort vurdering",
+  "search_term": "Kort realistisk søgning"
 }}
-
-Regler:
-- Dansk
-- Kort title
-- search_term skal være realistisk
-- Ingen overdreven designer-gætning
 """
 
-    models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash"
-    ]
-
-    for model_name in models:
-
-        try:
-
-            print("=" * 40)
-            print(f"MODEL: {model_name}")
-            print("=" * 40)
-
-            response = client.models.generate_content(
-                model=model_name,
-                contents=[
-                    prompt,
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type="image/jpeg"
-                    )
-                ]
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            prompt,
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type="image/jpeg"
             )
+        ],
+        config=types.GenerateContentConfig(
+            temperature=0.1
+        )
+    )
 
-            text = response.text.strip()
+    text = response.text.strip()
 
-            text = re.sub(
-                r"```json|```",
-                "",
-                text
-            ).strip()
+    text = re.sub(
+        r"```json|```",
+        "",
+        text
+    ).strip()
 
-            print(text)
+    print(text)
 
-            return json.loads(text)
-
-        except Exception as e:
-
-            print(f"MODEL ERROR: {e}")
-
-    raise Exception("Gemini failed")
+    return json.loads(text)
 
 # ---------------------------------------------------
 # SOURCE ROUTING
@@ -283,15 +339,11 @@ def get_sources(category):
 
     category = category.lower()
 
-    # tøj
     if any(word in category for word in [
         "jakke",
-        "blazer",
         "tøj",
+        "blazer",
         "sko",
-        "kjole",
-        "shirt",
-        "bukser",
         "mode"
     ]):
 
@@ -301,25 +353,10 @@ def get_sources(category):
             "Trendsales"
         ]
 
-    # kunst
     if any(word in category for word in [
-        "kunst",
-        "litografi",
-        "maleri",
-        "plakat"
-    ]):
-
-        return [
-            "Lauritz",
-            "DBA"
-        ]
-
-    # møbler
-    if any(word in category for word in [
-        "stol",
         "sofa",
+        "stol",
         "bord",
-        "møbel",
         "lænestol",
         "barstol"
     ]):
@@ -330,34 +367,6 @@ def get_sources(category):
             "Lauritz"
         ]
 
-    # lamper / design
-    if any(word in category for word in [
-        "lampe",
-        "belysning"
-    ]):
-
-        return [
-            "DBA",
-            "Marketplace",
-            "Lauritz"
-        ]
-
-    # køkken
-    if any(word in category for word in [
-        "køkken",
-        "service",
-        "glas",
-        "vase",
-        "keramik"
-    ]):
-
-        return [
-            "DBA",
-            "GulogGratis",
-            "Lauritz"
-        ]
-
-    # default
     return [
         "DBA",
         "Marketplace",
@@ -425,8 +434,7 @@ async def serp_search(query, source):
 
     except Exception as e:
 
-        print("SEARCH ERROR:")
-        print(e)
+        print("SEARCH ERROR:", e)
 
         return {
             "source": source,
@@ -458,25 +466,20 @@ def extract_prices(result):
     print("=" * 40)
     print(f"RAW SEARCH TEXT [{source}]")
     print("=" * 40)
-    print(combined[:6000])
+    print(combined[:5000])
 
     combined = combined.lower()
 
     patterns = [
-
         r"(\d{1,3}(?:[.,]\d{3})*)\s?kr",
-
         r"dkk\s?(\d{1,3}(?:[.,]\d{3})*)",
-
-        r"(\d{1,3}(?:[.,]\d{3})*)\s?dkk"
     ]
 
     blocked_before = [
         "str",
         "størrelse",
         "size",
-        "nr",
-        "model"
+        "model",
     ]
 
     for pattern in patterns:
@@ -522,36 +525,24 @@ def clean_prices(prices):
     if not prices:
         return []
 
-    if len(prices) < 4:
+    if len(prices) <= 4:
         return sorted(prices)
 
-    med = statistics.median(prices)
-
-    if med <= 0:
-        return sorted(prices)
+    median = statistics.median(prices)
 
     filtered = []
 
     for price in prices:
 
-        deviation = abs(price - med) / med
+        deviation = abs(price - median) / median
 
         if deviation <= 1.0:
-
             filtered.append(price)
 
         else:
-
-            print(
-                f"OUTLIER REMOVED: "
-                f"{price} "
-                f"(median: {round(med)})"
-            )
+            print(f"OUTLIER REMOVED: {price}")
 
     if len(filtered) < 2:
-
-        print("FILTER TOO AGGRESSIVE → USING ORIGINAL")
-
         return sorted(prices)
 
     filtered = sorted(list(set(filtered)))
@@ -602,7 +593,6 @@ def validate_design_prediction(
             detected_brand = brand
             break
 
-    # ingen designer fundet
     if not detected_brand:
         return title
 
@@ -614,45 +604,15 @@ def validate_design_prediction(
     if not is_furniture:
         return title
 
-    # ---------------------------------------------------
-    # HØJ CONFIDENCE
-    # ---------------------------------------------------
-
     if median_price >= 1800:
-
-        print("=" * 40)
-        print("DESIGN CONFIDENCE: HIGH")
-        print("=" * 40)
-
         return title
-
-    # ---------------------------------------------------
-    # MEDIUM CONFIDENCE
-    # ---------------------------------------------------
 
     if 1000 <= median_price < 1800:
 
-        print("=" * 40)
-        print("DESIGN CONFIDENCE: MEDIUM")
-        print("=" * 40)
-
         if not title.lower().startswith("muligvis"):
-
             return f"Muligvis {title}"
 
         return title
-
-    # ---------------------------------------------------
-    # LOW CONFIDENCE
-    # ---------------------------------------------------
-
-    print("=" * 40)
-    print("DESIGN CONFIDENCE: LOW")
-    print(
-        f"{detected_brand} downgraded "
-        f"(median {median_price})"
-    )
-    print("=" * 40)
 
     cleaned = title
 
@@ -690,12 +650,10 @@ async def analyze(file: UploadFile = File(...)):
 
         optimized = optimize_image(image_bytes)
 
-        # vision
         web_entities = await detect_web_entities(
             optimized
         )
 
-        # gemini
         vision = await analyze_image(
             optimized,
             web_entities
@@ -706,14 +664,19 @@ async def analyze(file: UploadFile = File(...)):
         title = vision.get("title", "Ukendt")
         category = vision.get("category", "Andet")
         condition = vision.get("condition", "")
-        search_term = vision.get("search_term", title)
 
-        # intelligente kilder
+        raw_search_term = vision.get(
+            "search_term",
+            title
+        )
+
+        search_term = optimize_search_term(
+            raw_search_term
+        )
+
         sources = get_sources(category)
 
-        print("=" * 40)
         print("SOURCES:", sources)
-        print("=" * 40)
 
         tasks = []
 
@@ -759,10 +722,6 @@ async def analyze(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-
-        print("=" * 40)
-        print("FATAL ERROR")
-        print("=" * 40)
 
         traceback.print_exc()
 
