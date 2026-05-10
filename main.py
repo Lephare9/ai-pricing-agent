@@ -156,7 +156,6 @@ def optimize_search_term(search_term):
 
     search_term = search_term.lower()
 
-    # fjern farver
     for color in COLORS:
 
         search_term = re.sub(
@@ -166,7 +165,6 @@ def optimize_search_term(search_term):
             flags=re.IGNORECASE
         )
 
-    # fjern støj
     for word in REMOVE_WORDS:
 
         search_term = re.sub(
@@ -176,14 +174,12 @@ def optimize_search_term(search_term):
             flags=re.IGNORECASE
         )
 
-    # cleanup
     search_term = re.sub(
         r"\s+",
         " ",
         search_term
     ).strip()
 
-    # max 3 ord
     parts = search_term.split()
 
     if len(parts) > 3:
@@ -568,7 +564,6 @@ def clean_prices(prices):
     if not prices:
         return []
 
-    # filtrér allerede fra 3 priser
     if len(prices) < 3:
         return sorted(prices)
 
@@ -580,7 +575,6 @@ def clean_prices(prices):
 
         deviation = abs(price - median) / median
 
-        # strammere symmetrisk filtering
         if deviation <= 0.6:
 
             filtered.append(price)
@@ -589,7 +583,6 @@ def clean_prices(prices):
 
             print(f"OUTLIER REMOVED: {price}")
 
-    # fallback hvis filtering blev for aggressivt
     if len(filtered) < 2:
 
         print("=" * 40)
@@ -608,22 +601,52 @@ def clean_prices(prices):
     return filtered
 
 # ---------------------------------------------------
-# BUILD PRICE
+# BUILD PRICE RANGE
 # ---------------------------------------------------
 
-def build_price(prices):
+def build_price_range(prices):
 
     if not prices:
         return None
 
     median = statistics.median(prices)
 
-    if median < 200:
-        rounded = round(median / 10) * 10
-    else:
-        rounded = round(median / 50) * 50
+    if median < 500:
 
-    return int(rounded)
+        low = median - 100
+        high = median + 100
+
+    elif median < 2000:
+
+        low = median * 0.8
+        high = median * 1.2
+
+    else:
+
+        low = median * 0.85
+        high = median * 1.15
+
+    # bredere interval ved få priser
+    if len(prices) <= 3:
+
+        low *= 0.9
+        high *= 1.1
+
+    # rounding
+    if median < 200:
+
+        low = round(low / 10) * 10
+        high = round(high / 10) * 10
+
+    else:
+
+        low = round(low / 50) * 50
+        high = round(high / 50) * 50
+
+    low = max(0, int(low))
+    high = int(high)
+
+    return f"{low}-{high} kr"
 
 # ---------------------------------------------------
 # DESIGN VALIDATION
@@ -833,7 +856,13 @@ async def analyze(file: UploadFile = File(...)):
 
         filtered = clean_prices(all_prices)
 
-        median_price = build_price(filtered)
+        price_range = build_price_range(filtered)
+
+        median_price = (
+            statistics.median(filtered)
+            if filtered
+            else None
+        )
 
         title = validate_design_prediction(
             title,
@@ -846,8 +875,8 @@ async def analyze(file: UploadFile = File(...)):
             "category": category,
             "condition": condition,
             "price": (
-                f"{median_price} kr"
-                if median_price
+                price_range
+                if price_range
                 else "Ingen sikre priser fundet"
             )
         }
