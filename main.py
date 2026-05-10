@@ -381,7 +381,10 @@ def get_sources(category):
         "stol",
         "bord",
         "lænestol",
-        "barstol"
+        "barstol",
+        "puf",
+        "skammel",
+        "fodskammel"
     ]):
 
         return [
@@ -578,7 +581,6 @@ def clean_prices(prices):
         deviation = abs(price - median) / median
 
         # strammere symmetrisk filtering
-        # både høje og lave outliers fjernes
         if deviation <= 0.6:
 
             filtered.append(price)
@@ -604,7 +606,6 @@ def clean_prices(prices):
     print("=" * 40)
 
     return filtered
-    
 
 # ---------------------------------------------------
 # BUILD PRICE
@@ -758,6 +759,8 @@ async def analyze(file: UploadFile = File(...)):
             raw_search_term
         )
 
+        category_search = category.lower()
+
         sources = get_sources(category)
 
         print("SOURCES:", sources)
@@ -784,6 +787,25 @@ async def analyze(file: UploadFile = File(...)):
 
                 result = await serp_search(
                     search_term,
+                    source,
+                    engine="google"
+                )
+
+                prices = extract_prices(result)
+
+            # FALLBACK → CATEGORY SEARCH
+            if (
+                len(prices) <= 1
+                and search_term != category_search
+            ):
+
+                print("=" * 40)
+                print("FALLBACK TO CATEGORY SEARCH")
+                print(f"{search_term} → {category_search}")
+                print("=" * 40)
+
+                result = await serp_search(
+                    category_search,
                     source,
                     engine="google"
                 )
