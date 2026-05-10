@@ -64,7 +64,8 @@ HIGH_VALUE_DESIGN = [
     "montana",
     "gubi",
     "eames",
-    "kartell"
+    "kartell",
+    "louis poulsen"
 ]
 
 HIGH_VALUE_FURNITURE = [
@@ -172,7 +173,6 @@ async def detect_web_entities(image_bytes):
                 desc = entity.get("description", "").strip()
                 score = entity.get("score", 0)
 
-                # kun relativt sikre entities
                 if score >= 0.70 and len(desc) > 2:
 
                     entities.append({
@@ -276,6 +276,95 @@ Regler:
     raise Exception("Gemini failed")
 
 # ---------------------------------------------------
+# SOURCE ROUTING
+# ---------------------------------------------------
+
+def get_sources(category):
+
+    category = category.lower()
+
+    # tøj
+    if any(word in category for word in [
+        "jakke",
+        "blazer",
+        "tøj",
+        "sko",
+        "kjole",
+        "shirt",
+        "bukser",
+        "mode"
+    ]):
+
+        return [
+            "DBA",
+            "Marketplace",
+            "Trendsales"
+        ]
+
+    # kunst
+    if any(word in category for word in [
+        "kunst",
+        "litografi",
+        "maleri",
+        "plakat"
+    ]):
+
+        return [
+            "Lauritz",
+            "DBA"
+        ]
+
+    # møbler
+    if any(word in category for word in [
+        "stol",
+        "sofa",
+        "bord",
+        "møbel",
+        "lænestol",
+        "barstol"
+    ]):
+
+        return [
+            "DBA",
+            "Marketplace",
+            "Lauritz"
+        ]
+
+    # lamper / design
+    if any(word in category for word in [
+        "lampe",
+        "belysning"
+    ]):
+
+        return [
+            "DBA",
+            "Marketplace",
+            "Lauritz"
+        ]
+
+    # køkken
+    if any(word in category for word in [
+        "køkken",
+        "service",
+        "glas",
+        "vase",
+        "keramik"
+    ]):
+
+        return [
+            "DBA",
+            "GulogGratis",
+            "Lauritz"
+        ]
+
+    # default
+    return [
+        "DBA",
+        "Marketplace",
+        "GulogGratis"
+    ]
+
+# ---------------------------------------------------
 # SEARCH
 # ---------------------------------------------------
 
@@ -300,6 +389,9 @@ async def serp_search(query, source):
 
         elif source == "GulogGratis":
             q += " site:guloggratis.dk"
+
+        elif source == "Trendsales":
+            q += " site:vinted.dk"
 
         url = "https://serpapi.com/search.json"
 
@@ -444,7 +536,6 @@ def clean_prices(prices):
 
         deviation = abs(price - med) / med
 
-        # max 100% fra median
         if deviation <= 1.0:
 
             filtered.append(price)
@@ -522,7 +613,6 @@ def validate_design_prediction(
     if not is_furniture:
         return title
 
-    # for billigt til premium design
     if median_price < 1200:
 
         print("=" * 40)
@@ -571,7 +661,7 @@ async def analyze(file: UploadFile = File(...)):
 
         optimized = optimize_image(image_bytes)
 
-        # vision web detection
+        # vision
         web_entities = await detect_web_entities(
             optimized
         )
@@ -589,13 +679,20 @@ async def analyze(file: UploadFile = File(...)):
         condition = vision.get("condition", "")
         search_term = vision.get("search_term", title)
 
-        tasks = [
+        # intelligente kilder
+        sources = get_sources(category)
 
-            serp_search(search_term, "DBA"),
-            serp_search(search_term, "Marketplace"),
-            serp_search(search_term, "Lauritz"),
-            serp_search(search_term, "GulogGratis")
-        ]
+        print("=" * 40)
+        print("SOURCES:", sources)
+        print("=" * 40)
+
+        tasks = []
+
+        for source in sources:
+
+            tasks.append(
+                serp_search(search_term, source)
+            )
 
         results = await asyncio.gather(*tasks)
 
