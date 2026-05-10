@@ -6,6 +6,7 @@ from google import genai
 from google.genai import types
 
 from PIL import Image
+from bs4 import BeautifulSoup
 
 import statistics
 import traceback
@@ -35,11 +36,9 @@ app.add_middleware(
 # ---------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 
 print("GEMINI:", bool(GEMINI_API_KEY))
-print("SERPAPI:", bool(SERPAPI_KEY))
 print("VISION:", bool(GOOGLE_VISION_API_KEY))
 
 # ---------------------------------------------------
@@ -49,33 +48,7 @@ print("VISION:", bool(GOOGLE_VISION_API_KEY))
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------
-# DESIGN BRANDS
-# ---------------------------------------------------
-
-HIGH_VALUE_DESIGN = [
-    "hay",
-    "mater",
-    "wegner",
-    "fritz hansen",
-    "carl hansen",
-    "pp møbler",
-    "montana",
-    "gubi",
-    "eames",
-    "kartell",
-    "louis poulsen",
-]
-
-HIGH_VALUE_FURNITURE = [
-    "stol",
-    "barstol",
-    "lænestol",
-    "sofa",
-    "bord",
-]
-
-# ---------------------------------------------------
-# STRONG DESIGN DETECTION
+# DESIGN DETECTION
 # ---------------------------------------------------
 
 DESIGN_KEYWORDS = [
@@ -135,6 +108,19 @@ REMOVE_WORDS = [
     "næsten ny",
 ]
 
+FURNITURE_WORDS = [
+    "spisebordsstol",
+    "lænestol",
+    "barstol",
+    "sofabænk",
+    "sofa",
+    "bord",
+    "stol",
+    "lampe",
+    "vase",
+    "puf",
+]
+
 # ---------------------------------------------------
 # ROOT
 # ---------------------------------------------------
@@ -181,6 +167,17 @@ def optimize_search_term(search_term):
 
     search_term = search_term.lower()
 
+    # simple replacements
+    replacements = {
+        "formspændt stol": "spisebordsstol",
+        "sofabænk": "sofa",
+        "daybed": "sofa",
+    }
+
+    for old, new in replacements.items():
+        search_term = search_term.replace(old, new)
+
+    # remove colors
     for color in COLORS:
 
         search_term = re.sub(
@@ -190,6 +187,7 @@ def optimize_search_term(search_term):
             flags=re.IGNORECASE
         )
 
+    # remove noise
     for word in REMOVE_WORDS:
 
         search_term = re.sub(
@@ -205,10 +203,19 @@ def optimize_search_term(search_term):
         search_term
     ).strip()
 
+    # keep only first useful furniture word
+    for word in FURNITURE_WORDS:
+
+        if word in search_term:
+
+            search_term = word
+            break
+
+    # max 2 words
     parts = search_term.split()
 
-    if len(parts) > 3:
-        search_term = " ".join(parts[:3])
+    if len(parts) > 2:
+        search_term = " ".join(parts[:2])
 
     print("=" * 40)
     print("SEARCH OPTIMIZATION")
@@ -219,7 +226,7 @@ def optimize_search_term(search_term):
     return search_term
 
 # ---------------------------------------------------
-# GOOGLE VISION WEB DETECTION
+# GOOGLE VISION
 # ---------------------------------------------------
 
 async def detect_web_entities(image_bytes):
@@ -345,17 +352,10 @@ async def analyze_image(
 
         design_hint = f"""
 
-VIGTIGT:
-Google Vision har med høj sikkerhed fundet:
+Google Vision fandt sandsynligvis:
 {strong_design_match}
 
-Dette skal prioriteres meget højt.
-
-Hvis det matcher objektet visuelt:
-- brug designnavnet
-- brug brandnavnet
-- brug modelnavnet
-- brug det i search_term
+Brug dette hvis objektet matcher visuelt.
 """
 
     prompt = f"""
@@ -372,24 +372,15 @@ VIGTIGT:
 - Ignorér baggrund
 - Gæt ikke designer hvis usikker
 
-MEGET VIGTIGT:
+Search_term skal ligne almindelige DBA søgninger.
 
-search_term skal ligne almindelige ord
-fra DBA annoncer.
+Brug simple ord.
 
 Brug IKKE:
-- fagtermer
-- designtermer
-- arkitektord
-- tekniske beskrivelser
-
-Brug simple folkelige ord.
-
-Search_term må IKKE indeholde:
 - farver
 - stand
-- størrelser
-- pyntetekst
+- materialer
+- tekniske beskrivelser
 
 Returnér KUN valid JSON:
 
@@ -397,7 +388,7 @@ Returnér KUN valid JSON:
   "title": "Kort titel",
   "category": "Kategori",
   "condition": "Kort vurdering",
-  "search_term": "Folkelig DBA søgning"
+  "search_term": "Simpel DBA søgning"
 }}
 """
 
@@ -428,196 +419,58 @@ Returnér KUN valid JSON:
     return json.loads(text)
 
 # ---------------------------------------------------
-# SOURCE ROUTING
+# DIRECT DBA SEARCH
 # ---------------------------------------------------
 
-def get_sources(category):
-
-    category = category.lower()
-
-    if any(word in category for word in [
-        "jakke",
-        "tøj",
-        "blazer",
-        "sko",
-        "mode",
-        "kjole",
-        "shirt",
-        "bukser"
-    ]):
-
-        return [
-            "Trendsales",
-            "DBA"
-        ]
-
-    if any(word in category for word in [
-        "sofa",
-        "stol",
-        "bord",
-        "lænestol",
-        "barstol",
-        "puf",
-        "skammel",
-        "fodskammel"
-    ]):
-
-        return [
-            "DBA",
-            "Marketplace",
-            "Lauritz"
-        ]
-
-    if any(word in category for word in [
-        "kunst",
-        "litografi",
-        "plakat",
-        "maleri",
-        "lampe",
-        "vase"
-    ]):
-
-        return [
-            "Lauritz",
-            "DBA"
-        ]
-
-    return [
-        "DBA",
-        "Marketplace",
-        "GulogGratis"
-    ]
-
-# ---------------------------------------------------
-# SEARCH
-# ---------------------------------------------------
-
-async def serp_search(query, source, engine="google_light"):
+async def dba_search(query):
 
     try:
 
         print("=" * 40)
-        print(f"SEARCH: {query} {source}")
-        print(f"ENGINE: {engine}")
+        print(f"DBA SEARCH: {query}")
         print("=" * 40)
 
-        q = query
+        url = (
+            "https://www.dba.dk/recommerce/forsale/search"
+            f"?q={query}"
+        )
 
-        if source == "DBA":
-            q += " site:dba.dk"
-
-        elif source == "Marketplace":
-            q += " site:facebook.com/marketplace Danmark"
-
-        elif source == "Lauritz":
-            q += " site:lauritz.com hammer"
-
-        elif source == "GulogGratis":
-            q += " site:guloggratis.dk"
-
-        elif source == "Trendsales":
-            q += " site:vinted.dk"
-
-        url = "https://serpapi.com/search.json"
-
-        params = {
-            "engine": engine,
-            "q": q,
-            "api_key": SERPAPI_KEY,
-            "google_domain": "google.dk",
-            "gl": "dk",
-            "hl": "da",
-            "num": 10
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0 Safari/537.36"
+            )
         }
 
         async with httpx.AsyncClient(timeout=20) as http:
 
             response = await http.get(
                 url,
-                params=params
+                headers=headers
             )
 
-        data = response.json()
+        html = response.text
 
-        organic = data.get("organic_results", [])
+        print("=" * 40)
+        print(f"HTML LENGTH: {len(html)}")
+        print("=" * 40)
 
-        print(f"ORGANIC COUNT: {len(organic)}")
+        soup = BeautifulSoup(html, "html.parser")
 
-        return {
-            "source": source,
-            "data": data
-        }
+        matches = re.findall(
+            r"(\d{1,3}(?:\.\d{3})*)\s?kr",
+            html,
+            flags=re.IGNORECASE
+        )
 
-    except Exception as e:
+        prices = []
 
-        print("SEARCH ERROR:", e)
-
-        return {
-            "source": source,
-            "data": {}
-        }
-
-# ---------------------------------------------------
-# EXTRACT PRICES
-# ---------------------------------------------------
-
-def extract_prices(result):
-
-    source = result["source"]
-    data = result["data"]
-
-    prices = []
-
-    organic = data.get("organic_results", [])
-
-    text_parts = []
-
-    for item in organic:
-
-        text_parts.append(item.get("title", ""))
-        text_parts.append(item.get("snippet", ""))
-
-    combined = " ".join(text_parts)
-
-    print("=" * 40)
-    print(f"RAW SEARCH TEXT [{source}]")
-    print("=" * 40)
-    print(combined[:5000])
-
-    combined = combined.lower()
-
-    patterns = [
-        r"(\d{1,3}(?:[.,]\d{3})*)\s?kr",
-        r"dkk\s?(\d{1,3}(?:[.,]\d{3})*)",
-    ]
-
-    blocked_before = [
-        "str",
-        "størrelse",
-        "size",
-        "model",
-    ]
-
-    for pattern in patterns:
-
-        matches = re.finditer(pattern, combined)
-
-        for match in matches:
+        for raw in matches:
 
             try:
 
-                start = max(0, match.start() - 15)
-
-                context = combined[start:match.start()]
-
-                if any(word in context for word in blocked_before):
-                    continue
-
-                raw = match.group(1)
-
                 raw = raw.replace(".", "")
-                raw = raw.replace(",", "")
-
                 price = int(raw)
 
                 if 50 <= price <= 250000:
@@ -626,11 +479,20 @@ def extract_prices(result):
             except:
                 pass
 
-    prices = sorted(list(set(prices)))
+        prices = sorted(list(set(prices)))
 
-    print(f"FOUND [{source}]: {prices}")
+        print("=" * 40)
+        print(f"DBA RAW PRICES: {prices[:50]}")
+        print(f"COUNT: {len(prices)}")
+        print("=" * 40)
 
-    return prices
+        return prices
+
+    except Exception as e:
+
+        print("DBA SEARCH ERROR:", e)
+
+        return []
 
 # ---------------------------------------------------
 # CLEAN PRICES
@@ -660,10 +522,6 @@ def clean_prices(prices):
 
             print(f"OUTLIER REMOVED: {price}")
 
-    if len(filtered) < 2:
-
-        return sorted(prices)
-
     filtered = sorted(list(set(filtered)))
 
     print("FILTERED:", filtered)
@@ -681,40 +539,13 @@ def build_price_range(prices):
 
     median = statistics.median(prices)
 
-    if median < 500:
+    low = median * 0.85
+    high = median * 1.15
 
-        low = median - 100
-        high = median + 100
+    low = round(low / 50) * 50
+    high = round(high / 50) * 50
 
-    elif median < 2000:
-
-        low = median * 0.8
-        high = median * 1.2
-
-    else:
-
-        low = median * 0.85
-        high = median * 1.15
-
-    if len(prices) <= 3:
-
-        low *= 0.9
-        high *= 1.1
-
-    if median < 200:
-
-        low = round(low / 10) * 10
-        high = round(high / 10) * 10
-
-    else:
-
-        low = round(low / 50) * 50
-        high = round(high / 50) * 50
-
-    low = max(0, int(low))
-    high = int(high)
-
-    return f"{low}-{high} kr"
+    return f"{int(low)}-{int(high)} kr"
 
 # ---------------------------------------------------
 # ANALYZE
@@ -762,58 +593,28 @@ async def analyze(file: UploadFile = File(...)):
             raw_search_term
         )
 
-        category_search = category.lower()
+        # ---------------------------------------------------
+        # DIRECT DBA SCRAPE
+        # ---------------------------------------------------
 
-        sources = get_sources(category)
+        prices = await dba_search(search_term)
 
-        print("SOURCES:", sources)
+        # fallback
+        if len(prices) <= 2:
 
-        all_prices = []
+            print("=" * 40)
+            print("CATEGORY FALLBACK")
+            print("=" * 40)
 
-        for source in sources:
-
-            result = await serp_search(
-                search_term,
-                source,
-                engine="google_light"
+            prices = await dba_search(
+                category.lower()
             )
 
-            prices = extract_prices(result)
+        print("ALL RAW:", prices)
 
-            if len(prices) <= 1:
+        filtered = clean_prices(prices)
 
-                result = await serp_search(
-                    search_term,
-                    source,
-                    engine="google"
-                )
-
-                prices = extract_prices(result)
-
-            if (
-                len(prices) <= 1
-                and search_term != category_search
-            ):
-
-                result = await serp_search(
-                    category_search,
-                    source,
-                    engine="google"
-                )
-
-                prices = extract_prices(result)
-
-            all_prices.extend(prices)
-
-            all_prices = sorted(
-                list(set(all_prices))
-            )
-
-            print("CURRENT PRICES:", all_prices)
-
-        print("ALL:", all_prices)
-
-        filtered = clean_prices(all_prices)
+        print("FILTERED:", filtered)
 
         price_range = build_price_range(filtered)
 
