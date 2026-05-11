@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -186,18 +186,21 @@ async def search(query: str):
 
 
 @app.post("/analyze")
-async def analyze(request: dict):
+async def analyze(
+    file: UploadFile = File(None),
+    query: str = Form(default="")
+):
 
-    query = request.get("query", "")
+    filename = None
 
-    if not query:
+    if file:
+        filename = file.filename
 
-        return {
-            "success": False,
-            "error": "Missing query"
-        }
+    results = []
 
-    results = await lauritz.get_all_search_results(query)
+    if query:
+
+        results = await lauritz.get_all_search_results(query)
 
     simplified = []
 
@@ -223,9 +226,11 @@ async def analyze(request: dict):
 
     return {
         "success": True,
+        "filename": filename,
         "query": query,
         "count": len(simplified),
         "results": simplified,
+        "message": "Backend modtog request korrekt"
     }
 
 
