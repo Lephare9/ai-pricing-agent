@@ -5,3 +5,5 @@ pillow
 httpx
 python-multipart
 cloudinary
+beautifulsoup4
+lxml
