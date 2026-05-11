@@ -7,10 +7,12 @@ from google.genai import types
 
 from PIL import Image
 
+import cloudinary
+import cloudinary.uploader
+
 import statistics
 import traceback
 import httpx
-import base64
 import json
 import re
 import os
@@ -37,14 +39,29 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
 print("GEMINI:", bool(GEMINI_API_KEY))
 print("SERPAPI:", bool(SERPAPI_KEY))
+print("CLOUDINARY:", bool(CLOUDINARY_CLOUD_NAME))
 
 # ---------------------------------------------------
 # GEMINI
 # ---------------------------------------------------
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+# ---------------------------------------------------
+# CLOUDINARY
+# ---------------------------------------------------
+
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+)
 
 # ---------------------------------------------------
 # ROOT
@@ -83,7 +100,7 @@ def optimize_image(image_bytes):
     return optimized
 
 # ---------------------------------------------------
-# GOOGLE LENS
+# GOOGLE LENS SEARCH
 # ---------------------------------------------------
 
 async def google_lens_search(image_bytes):
@@ -94,19 +111,32 @@ async def google_lens_search(image_bytes):
         print("GOOGLE LENS SEARCH")
         print("=" * 40)
 
-        image_base64 = base64.b64encode(
-            image_bytes
-        ).decode("utf-8")
+        # -----------------------------------------
+        # UPLOAD TO CLOUDINARY
+        # -----------------------------------------
 
-        image_data_url = (
-            f"data:image/jpeg;base64,{image_base64}"
+        upload_result = cloudinary.uploader.upload(
+            image_bytes,
+            folder="pricing-agent",
+            resource_type="image"
         )
+
+        image_url = upload_result.get("secure_url")
+
+        print("=" * 40)
+        print("IMAGE URL")
+        print(image_url)
+        print("=" * 40)
+
+        # -----------------------------------------
+        # SERPAPI GOOGLE LENS
+        # -----------------------------------------
 
         url = "https://serpapi.com/search.json"
 
         params = {
             "engine": "google_lens",
-            "url": image_data_url,
+            "url": image_url,
             "api_key": SERPAPI_KEY
         }
 
@@ -119,7 +149,16 @@ async def google_lens_search(image_bytes):
 
         data = response.json()
 
+        print("=" * 40)
+        print("LENS RESPONSE")
+        print(json.dumps(data)[:2000])
+        print("=" * 40)
+
         candidates = []
+
+        # -----------------------------------------
+        # KNOWLEDGE GRAPH
+        # -----------------------------------------
 
         knowledge = data.get(
             "knowledge_graph",
@@ -128,10 +167,14 @@ async def google_lens_search(image_bytes):
 
         if knowledge:
 
-            kg_title = knowledge.get("title")
+            title = knowledge.get("title")
 
-            if kg_title:
-                candidates.append(kg_title)
+            if title:
+                candidates.append(title)
+
+        # -----------------------------------------
+        # VISUAL MATCHES
+        # -----------------------------------------
 
         visual_matches = data.get(
             "visual_matches",
@@ -144,6 +187,10 @@ async def google_lens_search(image_bytes):
 
             if len(title) > 3:
                 candidates.append(title)
+
+        # -----------------------------------------
+        # CLEAN
+        # -----------------------------------------
 
         cleaned = []
 
@@ -168,6 +215,8 @@ async def google_lens_search(image_bytes):
 
         print("LENS ERROR:", e)
 
+        traceback.print_exc()
+
         return []
 
 # ---------------------------------------------------
@@ -176,17 +225,19 @@ async def google_lens_search(image_bytes):
 
 async def normalize_search_term(lens_candidates):
 
-    prompt = f"""
+    try:
+
+        prompt = f"""
 Du får Google Lens resultater.
 
-Find den bedste DBA-søgning.
+Find den bedste DBA søgning.
 
 REGLER:
+- Kort
 - Max 3 ord
 - Dansk hvis muligt
-- Kort og menneskeligt
+- Brug modelnavne hvis sikre
 - Fjern støj
-- Behold modelnavne hvis stærke
 
 Lens resultater:
 {lens_candidates}
@@ -200,28 +251,38 @@ Returnér KUN valid JSON:
 }}
 """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1
+            )
         )
-    )
 
-    text = response.text.strip()
+        text = response.text.strip()
 
-    text = re.sub(
-        r"```json|```",
-        "",
-        text
-    ).strip()
+        text = re.sub(
+            r"```json|```",
+            "",
+            text
+        ).strip()
 
-    print("=" * 40)
-    print("NORMALIZED")
-    print(text)
-    print("=" * 40)
+        print("=" * 40)
+        print("NORMALIZED")
+        print(text)
+        print("=" * 40)
 
-    return json.loads(text)
+        return json.loads(text)
+
+    except Exception as e:
+
+        print("NORMALIZE ERROR:", e)
+
+        return {
+            "title": "Ukendt produkt",
+            "search_term": "brugt møbel",
+            "category": "Møbler"
+        }
 
 # ---------------------------------------------------
 # DBA SEARCH
@@ -287,7 +348,8 @@ async def dba_search(query):
         prices = sorted(list(set(prices)))
 
         print("=" * 40)
-        print(f"RAW PRICES: {prices[:50]}")
+        print("RAW PRICES")
+        print(prices[:50])
         print(f"COUNT: {len(prices)}")
         print("=" * 40)
 
@@ -295,7 +357,7 @@ async def dba_search(query):
 
     except Exception as e:
 
-        print("DBA SEARCH ERROR:", e)
+        print("DBA ERROR:", e)
 
         return []
 
@@ -309,7 +371,7 @@ def clean_prices(prices):
         return []
 
     if len(prices) < 5:
-        return sorted(prices)
+        return prices
 
     median = statistics.median(prices)
 
@@ -320,14 +382,19 @@ def clean_prices(prices):
         deviation = abs(price - median) / median
 
         if deviation <= 0.60:
+
             filtered.append(price)
 
         else:
+
             print(f"OUTLIER REMOVED: {price}")
 
     filtered = sorted(list(set(filtered)))
 
-    print("FILTERED:", filtered)
+    print("=" * 40)
+    print("FILTERED")
+    print(filtered)
+    print("=" * 40)
 
     return filtered
 
@@ -365,19 +432,29 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        optimized = optimize_image(
-            image_bytes
-        )
+        optimized = optimize_image(image_bytes)
+
+        # -----------------------------------------
+        # GOOGLE LENS
+        # -----------------------------------------
 
         lens_candidates = await google_lens_search(
             optimized
         )
+
+        # -----------------------------------------
+        # FALLBACK
+        # -----------------------------------------
 
         if not lens_candidates:
 
             lens_candidates = [
                 "brugt møbel"
             ]
+
+        # -----------------------------------------
+        # NORMALIZE
+        # -----------------------------------------
 
         normalized = await normalize_search_term(
             lens_candidates
@@ -390,13 +467,17 @@ async def analyze(file: UploadFile = File(...)):
 
         category = normalized.get(
             "category",
-            "Andet"
+            "Møbler"
         )
 
         search_term = normalized.get(
             "search_term",
             title
         )
+
+        # -----------------------------------------
+        # DBA SEARCH
+        # -----------------------------------------
 
         prices = await dba_search(
             search_term
@@ -417,7 +498,8 @@ async def analyze(file: UploadFile = File(...)):
                 if price_range
                 else "Ingen sikre priser fundet"
             ),
-            "lens_matches": lens_candidates[:5]
+            "lens_matches": lens_candidates[:5],
+            "sample_prices": filtered[:15]
         }
 
     except Exception as e:

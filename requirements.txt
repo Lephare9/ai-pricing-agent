@@ -4,3 +4,4 @@ google-genai
 pillow
 httpx
 python-multipart
+cloudinary
