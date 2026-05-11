@@ -1,15 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import httpx
-import asyncio
 
 app = FastAPI(title="AI Pricing Agent")
 
 
-# =========================
+# =========================================
 # CORS
-# =========================
+# =========================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,9 +18,9 @@ app.add_middleware(
 )
 
 
-# =========================
+# =========================================
 # Lauritz scraper
-# =========================
+# =========================================
 
 BASE_URL = "https://www.lauritz.com/_next/data"
 
@@ -37,7 +35,7 @@ class LauritzScraper:
         if self.build_id:
             return self.build_id
 
-        url = "https://www.lauritz.com/da/auctions/search/wegner"
+        url = "https://www.lauritz.com/da"
 
         async with httpx.AsyncClient(timeout=30) as client:
 
@@ -72,6 +70,7 @@ class LauritzScraper:
             response = await client.get(url)
 
             if response.status_code != 200:
+
                 return {
                     "success": False,
                     "status_code": response.status_code,
@@ -98,7 +97,6 @@ class LauritzScraper:
 
         auctions = []
 
-        # Forsøg forskellige paths
         possible_paths = [
             ["pageProps", "auctions"],
             ["pageProps", "searchResult", "auctions"],
@@ -130,17 +128,9 @@ class LauritzScraper:
 lauritz = LauritzScraper()
 
 
-# =========================
-# Models
-# =========================
-
-class AnalyzeRequest(BaseModel):
-    query: str
-
-
-# =========================
+# =========================================
 # Routes
-# =========================
+# =========================================
 
 @app.get("/")
 async def root():
@@ -196,9 +186,18 @@ async def search(query: str):
 
 
 @app.post("/analyze")
-async def analyze(request: AnalyzeRequest):
+async def analyze(request: dict):
 
-    results = await lauritz.get_all_search_results(request.query)
+    query = request.get("query", "")
+
+    if not query:
+
+        return {
+            "success": False,
+            "error": "Missing query"
+        }
+
+    results = await lauritz.get_all_search_results(query)
 
     simplified = []
 
@@ -224,7 +223,7 @@ async def analyze(request: AnalyzeRequest):
 
     return {
         "success": True,
-        "query": request.query,
+        "query": query,
         "count": len(simplified),
         "results": simplified,
     }
