@@ -278,9 +278,72 @@ Returnér KUN valid JSON:
 
         print("NORMALIZE ERROR:", e)
 
+        fallback = ""
+
+        if lens_candidates:
+
+            fallback = lens_candidates[0]
+
+            fallback = fallback.lower()
+
+            fallback = re.sub(
+                r"[^a-zA-ZæøåÆØÅ0-9 ]",
+                " ",
+                fallback
+            )
+
+            remove_words = [
+                "with",
+                "lights",
+                "light",
+                "lamp",
+                "ceiling",
+                "modern",
+                "indoor",
+                "farmhouse",
+                "boho",
+                "large",
+                "small",
+                "set",
+                "premium",
+                "linen",
+                "mount",
+                "flush",
+                "semi",
+                "profile",
+                "remote",
+                "usa"
+            ]
+
+            for word in remove_words:
+
+                fallback = re.sub(
+                    rf"\b{word}\b",
+                    "",
+                    fallback
+                )
+
+            fallback = re.sub(
+                r"\s+",
+                " ",
+                fallback
+            ).strip()
+
+            words = fallback.split(" ")
+
+            fallback = " ".join(words[:3])
+
+        if not fallback:
+            fallback = "lampe"
+
+        print("=" * 40)
+        print("FALLBACK SEARCH")
+        print(fallback)
+        print("=" * 40)
+
         return {
-            "title": "Ukendt produkt",
-            "search_term": "brugt møbel",
+            "title": fallback.title(),
+            "search_term": fallback,
             "category": "Møbler"
         }
 
@@ -449,7 +512,7 @@ async def analyze(file: UploadFile = File(...)):
         if not lens_candidates:
 
             lens_candidates = [
-                "brugt møbel"
+                "lampe"
             ]
 
         # -----------------------------------------
