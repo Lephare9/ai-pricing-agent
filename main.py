@@ -111,10 +111,6 @@ async def google_lens_search(image_bytes):
         print("GOOGLE LENS SEARCH")
         print("=" * 40)
 
-        # -----------------------------------------
-        # UPLOAD TO CLOUDINARY
-        # -----------------------------------------
-
         upload_result = cloudinary.uploader.upload(
             image_bytes,
             folder="pricing-agent",
@@ -127,10 +123,6 @@ async def google_lens_search(image_bytes):
         print("IMAGE URL")
         print(image_url)
         print("=" * 40)
-
-        # -----------------------------------------
-        # SERPAPI GOOGLE LENS
-        # -----------------------------------------
 
         url = "https://serpapi.com/search.json"
 
@@ -149,16 +141,7 @@ async def google_lens_search(image_bytes):
 
         data = response.json()
 
-        print("=" * 40)
-        print("LENS RESPONSE")
-        print(json.dumps(data)[:2000])
-        print("=" * 40)
-
         candidates = []
-
-        # -----------------------------------------
-        # KNOWLEDGE GRAPH
-        # -----------------------------------------
 
         knowledge = data.get(
             "knowledge_graph",
@@ -172,10 +155,6 @@ async def google_lens_search(image_bytes):
             if title:
                 candidates.append(title)
 
-        # -----------------------------------------
-        # VISUAL MATCHES
-        # -----------------------------------------
-
         visual_matches = data.get(
             "visual_matches",
             []
@@ -187,10 +166,6 @@ async def google_lens_search(image_bytes):
 
             if len(title) > 3:
                 candidates.append(title)
-
-        # -----------------------------------------
-        # CLEAN
-        # -----------------------------------------
 
         cleaned = []
 
@@ -220,6 +195,106 @@ async def google_lens_search(image_bytes):
         return []
 
 # ---------------------------------------------------
+# CLEAN SEARCH TERM
+# ---------------------------------------------------
+
+def clean_search_term(text):
+
+    text = text.lower()
+
+    remove_words = [
+        "with",
+        "light",
+        "lights",
+        "lighting",
+        "modern",
+        "indoor",
+        "farmhouse",
+        "boho",
+        "premium",
+        "large",
+        "small",
+        "set",
+        "remote",
+        "mount",
+        "flush",
+        "semi",
+        "profile",
+        "round",
+        "wooden",
+        "wood",
+        "solid",
+        "dark",
+        "home",
+        "decor",
+        "usa",
+        "scandinavian"
+    ]
+
+    replacements = {
+        "ceiling light": "loftlampe",
+        "pendant light": "pendel",
+        "ceiling lamp": "loftlampe",
+        "dining chair": "spisebordsstol",
+        "armchair": "lænestol",
+        "coffee table": "sofabord",
+        "side table": "sidebord",
+        "counter stool": "barstol",
+        "bar stool": "barstol",
+        "ceiling fan": "lampe",
+    }
+
+    for english, danish in replacements.items():
+
+        text = text.replace(
+            english,
+            danish
+        )
+
+    text = re.sub(
+        r"[^a-zA-ZæøåÆØÅ0-9 ]",
+        " ",
+        text
+    )
+
+    for word in remove_words:
+
+        text = re.sub(
+            rf"\b{word}\b",
+            "",
+            text
+        )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+    words = text.split(" ")
+
+    important = []
+
+    for word in words:
+
+        if len(word) < 2:
+            continue
+
+        if word not in important:
+            important.append(word)
+
+    important = important[:4]
+
+    final_text = " ".join(important)
+
+    print("=" * 40)
+    print("CLEAN SEARCH")
+    print(final_text)
+    print("=" * 40)
+
+    return final_text
+
+# ---------------------------------------------------
 # NORMALIZE SEARCH TERM
 # ---------------------------------------------------
 
@@ -230,14 +305,15 @@ async def normalize_search_term(lens_candidates):
         prompt = f"""
 Du får Google Lens resultater.
 
-Find den bedste DBA søgning.
+Oversæt til naturligt dansk DBA-sprog.
 
 REGLER:
+- Maks 4 ord
+- Dansk
 - Kort
-- Max 3 ord
-- Dansk hvis muligt
-- Brug modelnavne hvis sikre
-- Fjern støj
+- Menneskeligt
+- Fokus på materiale + møbeltype
+- Fjern webshop-sprog
 
 Lens resultater:
 {lens_candidates}
@@ -272,7 +348,13 @@ Returnér KUN valid JSON:
         print(text)
         print("=" * 40)
 
-        return json.loads(text)
+        result = json.loads(text)
+
+        result["search_term"] = clean_search_term(
+            result.get("search_term", "")
+        )
+
+        return result
 
     except Exception as e:
 
@@ -282,64 +364,12 @@ Returnér KUN valid JSON:
 
         if lens_candidates:
 
-            fallback = lens_candidates[0]
-
-            fallback = fallback.lower()
-
-            fallback = re.sub(
-                r"[^a-zA-ZæøåÆØÅ0-9 ]",
-                " ",
-                fallback
+            fallback = clean_search_term(
+                lens_candidates[0]
             )
-
-            remove_words = [
-                "with",
-                "lights",
-                "light",
-                "lamp",
-                "ceiling",
-                "modern",
-                "indoor",
-                "farmhouse",
-                "boho",
-                "large",
-                "small",
-                "set",
-                "premium",
-                "linen",
-                "mount",
-                "flush",
-                "semi",
-                "profile",
-                "remote",
-                "usa"
-            ]
-
-            for word in remove_words:
-
-                fallback = re.sub(
-                    rf"\b{word}\b",
-                    "",
-                    fallback
-                )
-
-            fallback = re.sub(
-                r"\s+",
-                " ",
-                fallback
-            ).strip()
-
-            words = fallback.split(" ")
-
-            fallback = " ".join(words[:3])
 
         if not fallback:
             fallback = "lampe"
-
-        print("=" * 40)
-        print("FALLBACK SEARCH")
-        print(fallback)
-        print("=" * 40)
 
         return {
             "title": fallback.title(),
@@ -495,29 +525,19 @@ async def analyze(file: UploadFile = File(...)):
 
         image_bytes = await file.read()
 
-        optimized = optimize_image(image_bytes)
-
-        # -----------------------------------------
-        # GOOGLE LENS
-        # -----------------------------------------
+        optimized = optimize_image(
+            image_bytes
+        )
 
         lens_candidates = await google_lens_search(
             optimized
         )
-
-        # -----------------------------------------
-        # FALLBACK
-        # -----------------------------------------
 
         if not lens_candidates:
 
             lens_candidates = [
                 "lampe"
             ]
-
-        # -----------------------------------------
-        # NORMALIZE
-        # -----------------------------------------
 
         normalized = await normalize_search_term(
             lens_candidates
@@ -538,15 +558,13 @@ async def analyze(file: UploadFile = File(...)):
             title
         )
 
-        # -----------------------------------------
-        # DBA SEARCH
-        # -----------------------------------------
-
         prices = await dba_search(
             search_term
         )
 
-        filtered = clean_prices(prices)
+        filtered = clean_prices(
+            prices
+        )
 
         price_range = build_price_range(
             filtered
