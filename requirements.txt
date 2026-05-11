@@ -1,9 +1,7 @@
 fastapi
 uvicorn
-google-genai
-pillow
 httpx
-python-multipart
-cloudinary
 beautifulsoup4
 lxml
+python-multipart
+pydantic
