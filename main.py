@@ -1,21 +1,20 @@
 # main.py
 
-import os
 import re
 import json
-import asyncio
 from typing import List, Dict, Any
 
 import httpx
 from bs4 import BeautifulSoup
+
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+# =========================================================
+# APP
+# =========================================================
 
-# ----------------------------
-# CORS
-# ----------------------------
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,22 +24,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------------------
-# HELPERS
-# ----------------------------
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
+# =========================================================
+# HELPERS
+# =========================================================
 
-def safe_price(text: str):
+def safe_int(value):
 
-    if not text:
+    if value is None:
         return None
 
+    if isinstance(value, int):
+        return value
+
+    text = str(value)
+
     text = text.replace(".", "")
-    text = text.replace(",", ".")
+    text = text.replace(",", "")
+    text = text.replace("kr.", "")
     text = text.replace("kr", "")
     text = text.replace("DKK", "")
 
@@ -55,33 +59,33 @@ def safe_price(text: str):
         return None
 
 
-# ----------------------------
+# =========================================================
 # DBA
-# ----------------------------
+# =========================================================
 
 class DBAScraper:
 
     async def search(self, query: str):
 
-        url = f"https://www.dba.dk/soeg/?soeg={query}"
-
         results = []
 
         try:
+
+            url = f"https://www.dba.dk/soeg/?soeg={query}"
 
             async with httpx.AsyncClient(timeout=20) as client:
 
                 response = await client.get(
                     url,
                     headers=HEADERS,
-                    follow_redirects=True,
+                    follow_redirects=True
                 )
 
             soup = BeautifulSoup(response.text, "html.parser")
 
-            cards = soup.select("article")[:20]
+            cards = soup.select("article")
 
-            for card in cards:
+            for card in cards[:20]:
 
                 try:
 
@@ -95,13 +99,13 @@ class DBAScraper:
                     price = None
 
                     price_match = re.search(
-                        r"(\d{2,6})\s*kr",
+                        r"(\d[\d\.]*)\s*kr",
                         text,
                         re.I
                     )
 
                     if price_match:
-                        price = int(price_match.group(1))
+                        price = safe_int(price_match.group(1))
 
                     image = None
 
@@ -117,22 +121,24 @@ class DBAScraper:
                         "source": "DBA",
                         "title": title,
                         "price": price,
+                        "estimate": price,
+                        "current_bid": price,
                         "image": image,
                         "url": url,
                     })
 
                 except Exception as e:
-                    print("DBA item error:", e)
+                    print("DBA item parse failed:", e)
 
         except Exception as e:
-            print("DBA search failed:", e)
+            print("DBA failed:", e)
 
         return results
 
 
-# ----------------------------
+# =========================================================
 # LAURITZ
-# ----------------------------
+# =========================================================
 
 class LauritzScraper:
 
@@ -141,8 +147,7 @@ class LauritzScraper:
         try:
 
             url = (
-                "https://www.lauritz.com/"
-                f"da/auctions/search/{query}"
+                f"https://www.lauritz.com/da/auctions/search/{query}"
             )
 
             async with httpx.AsyncClient(timeout=20) as client:
@@ -150,7 +155,7 @@ class LauritzScraper:
                 response = await client.get(
                     url,
                     headers=HEADERS,
-                    follow_redirects=True,
+                    follow_redirects=True
                 )
 
             return {
@@ -180,7 +185,6 @@ class LauritzScraper:
 
         try:
 
-            # finder __NEXT_DATA__
             match = re.search(
                 r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
                 html,
@@ -227,7 +231,9 @@ class LauritzScraper:
                     image = item.get("defaultImageUrl")
 
                     if image and not image.startswith("http"):
-                        image = f"https://images.lauritz.com/{image}"
+                        image = (
+                            f"https://images.lauritz.com/{image}"
+                        )
 
                     prices = item.get("prices", {})
 
@@ -243,6 +249,8 @@ class LauritzScraper:
                         .get("amount")
                     )
 
+                    lot_id = item.get("lotId")
+
                     results.append({
                         "source": "Lauritz",
                         "title": title,
@@ -251,12 +259,12 @@ class LauritzScraper:
                         "current_bid": current_bid,
                         "image": image,
                         "url": (
-                            f"https://www.lauritz.com/da/auction/{item.get('lotId')}"
-                        )
+                            f"https://www.lauritz.com/da/auction/{lot_id}"
+                        ),
                     })
 
                 except Exception as e:
-                    print("Lauritz item parse error:", e)
+                    print("Lauritz item failed:", e)
 
         except Exception as e:
             print("Lauritz parser failed:", e)
@@ -264,22 +272,20 @@ class LauritzScraper:
         return results
 
 
-# ----------------------------
-# MARKETPLACE MOCK
-# ----------------------------
+# =========================================================
+# MARKETPLACE PLACEHOLDER
+# =========================================================
 
 class MarketplaceScraper:
 
     async def search(self, query: str):
 
-        # placeholder så hele systemet virker
-
         return []
 
 
-# ----------------------------
-# AI ENGINE
-# ----------------------------
+# =========================================================
+# ENGINE
+# =========================================================
 
 class PricingEngine:
 
@@ -293,7 +299,10 @@ class PricingEngine:
 
         all_results = []
 
+        # -------------------
         # DBA
+        # -------------------
+
         try:
 
             dba_results = await self.dba.search(query)
@@ -303,9 +312,12 @@ class PricingEngine:
             all_results.extend(dba_results)
 
         except Exception as e:
-            print("DBA failed:", e)
+            print("DBA global fail:", e)
 
+        # -------------------
         # Lauritz
+        # -------------------
+
         try:
 
             lauritz_results = (
@@ -317,9 +329,12 @@ class PricingEngine:
             all_results.extend(lauritz_results)
 
         except Exception as e:
-            print("Lauritz failed:", e)
+            print("Lauritz global fail:", e)
 
+        # -------------------
         # Marketplace
+        # -------------------
+
         try:
 
             market_results = (
@@ -331,42 +346,95 @@ class PricingEngine:
             all_results.extend(market_results)
 
         except Exception as e:
-            print("Marketplace failed:", e)
+            print("Marketplace global fail:", e)
 
-        print("TOTAL:", len(all_results))
+        # -------------------
+        # FILTER
+        # -------------------
 
-        # filtrer tomme objekter væk
         all_results = [
             x for x in all_results
             if x and x.get("title")
         ]
 
-        # prisberegning
-        prices = [
-            x["price"]
-            for x in all_results
-            if x.get("price")
-        ]
+        print("TOTAL:", len(all_results))
+
+        # -------------------
+        # PRICE ESTIMATE
+        # -------------------
+
+        prices = []
+
+        for item in all_results:
+
+            price = item.get("price")
+
+            if isinstance(price, int):
+                prices.append(price)
 
         estimated_price = None
 
         if prices:
             estimated_price = int(sum(prices) / len(prices))
 
+        # -------------------
+        # NORMALIZE FOR FRONTEND
+        # -------------------
+
+        normalized_results = []
+
+        for item in all_results[:20]:
+
+            normalized_results.append({
+
+                # COMMON
+                "source": item.get("source"),
+
+                # TITLES
+                "name": item.get("title"),
+                "title": item.get("title"),
+
+                # PRICE
+                "price": item.get("price"),
+                "estimated_price": item.get("estimate"),
+                "currentBid": item.get("current_bid"),
+
+                # IMAGE
+                "image": item.get("image"),
+                "imageUrl": item.get("image"),
+
+                # URL
+                "url": item.get("url"),
+
+                # DESCRIPTION
+                "description": (
+                    f"{item.get('source')} - "
+                    f"{item.get('title')}"
+                ),
+            })
+
         return {
+
             "success": True,
+
             "query": query,
+
             "estimated_price": estimated_price,
-            "count": len(all_results),
-            "results": all_results[:20],
+
+            "count": len(normalized_results),
+
+            # MULTI FRONTEND SUPPORT
+            "results": normalized_results,
+            "items": normalized_results,
+            "data": normalized_results,
         }
 
 
 engine = PricingEngine()
 
-# ----------------------------
+# =========================================================
 # ROUTES
-# ----------------------------
+# =========================================================
 
 @app.get("/")
 async def root():
@@ -390,7 +458,7 @@ async def analyze(
 
     final_query = query
 
-    # fallback hvis ingen query
+    # fallback
     if not final_query:
         final_query = "wegner"
 
