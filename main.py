@@ -5,35 +5,37 @@ import re
 import json
 
 import httpx
+import cloudinary
+import cloudinary.uploader
+
+import google.generativeai as genai
 
 from bs4 import BeautifulSoup
 
 from fastapi import FastAPI, Form
-
 from fastapi.middleware.cors import CORSMiddleware
-
-from google import genai
 
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-GOOGLE_VISION_API_KEY = os.getenv(
-    "GOOGLE_VISION_API_KEY"
+GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
 )
 
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY"
+genai.configure(
+    api_key=GEMINI_API_KEY
 )
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
-
-gemini_client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
 
 
 # =========================================================
@@ -82,7 +84,6 @@ def safe_int(value):
 
     try:
         return int(match.group(1))
-
     except:
         return None
 
@@ -108,14 +109,14 @@ def average_price(items):
 # GOOGLE VISION
 # =========================================================
 
-async def detect_vision(image_url: str):
+async def detect_with_google_vision(image_url: str):
 
-    url = (
+    endpoint = (
         "https://vision.googleapis.com/v1/images:annotate"
         f"?key={GOOGLE_VISION_API_KEY}"
     )
 
-    payload = {
+    body = {
         "requests": [
             {
                 "image": {
@@ -123,24 +124,15 @@ async def detect_vision(image_url: str):
                         "imageUri": image_url
                     }
                 },
-
                 "features": [
-
-                    {
-                        "type": "WEB_DETECTION",
-                        "maxResults": 10
-                    },
-
                     {
                         "type": "LABEL_DETECTION",
                         "maxResults": 10
                     },
-
                     {
-                        "type": "TEXT_DETECTION",
+                        "type": "WEB_DETECTION",
                         "maxResults": 10
-                    }
-
+                    },
                 ]
             }
         ]
@@ -149,302 +141,204 @@ async def detect_vision(image_url: str):
     async with httpx.AsyncClient(timeout=30) as client:
 
         response = await client.post(
-            url,
-            json=payload
+            endpoint,
+            json=body
         )
 
     data = response.json()
 
-    response_data = (
-        data.get("responses", [{}])[0]
-    )
-
-    # =====================================================
-    # WEB ENTITIES
-    # =====================================================
-
-    web_entities_raw = (
-        response_data.get(
-            "webDetection",
-            {}
-        ).get(
-            "webEntities",
-            []
-        )
-    )
-
-    web_entities = []
-
-    for entity in web_entities_raw:
-
-        name = (
-            entity.get("description", "")
-            .lower()
-            .strip()
-        )
-
-        score = entity.get("score", 0)
-
-        if (
-            name
-            and score > 0.5
-            and len(name) > 2
-        ):
-            web_entities.append(name)
-
-    # =====================================================
-    # LABELS
-    # =====================================================
-
-    labels_raw = (
-        response_data.get(
-            "labelAnnotations",
-            []
-        )
-    )
-
-    labels = []
-
-    for label in labels_raw:
-
-        name = (
-            label.get("description", "")
-            .lower()
-            .strip()
-        )
-
-        if name:
-            labels.append(name)
-
-    # =====================================================
-    # OCR
-    # =====================================================
-
-    texts = []
-
-    text_annotations = (
-        response_data.get(
-            "textAnnotations",
-            []
-        )
-    )
-
-    for item in text_annotations[:5]:
-
-        text = (
-            item.get("description", "")
-            .lower()
-            .strip()
-        )
-
-        if text:
-            texts.append(text)
-
-    print("VISION WEB ENTITIES:")
-    print(web_entities)
-
-    print("VISION LABELS:")
-    print(labels)
-
-    print("VISION OCR:")
-    print(texts)
-
-    return {
-
-        "web_entities": web_entities,
-
-        "labels": labels,
-
-        "texts": texts,
-    }
+    return data
 
 
 # =========================================================
-# GEMINI OBJECT UNDERSTANDING
+# GEMINI
 # =========================================================
 
 async def detect_with_gemini(image_url: str):
 
+    model = genai.GenerativeModel(
+        "gemini-1.5-flash"
+    )
+
+    prompt = f"""
+    Du analyserer billeder af designobjekter.
+
+    Returnér KUN JSON.
+
+    Format:
+
+    {{
+      "object_type": "",
+      "designer": "",
+      "brand": "",
+      "search_query": "",
+      "danish_keywords": []
+    }}
+
+    Vigtigt:
+
+    - Brug danske ord
+    - search_query skal være kort
+    - Gæt kun hvis sikker
+    - Hvis ukendt:
+      designer=""
+      brand=""
+    - Fokusér på:
+      stole
+      lamper
+      borde
+      møbler
+      designobjekter
+    - Ignorér:
+      gulv
+      plywood
+      texture
+      steel
+      varnish
+    - Returnér kun JSON
+    """
+
+    response = model.generate_content([
+        prompt,
+        image_url
+    ])
+
+    text = response.text.strip()
+
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
+    text = text.strip()
+
     try:
-
-        response = gemini_client.models.generate_content(
-
-            model="gemini-2.0-flash",
-
-            contents=[
-
-                {
-                    "role": "user",
-
-                    "parts": [
-
-                        {
-                            "text":
-                            """
-Describe this object for Danish secondhand marketplace search.
-
-Return ONLY short keywords.
-
-Focus on:
-- object type
-- style
-- material
-- designer
-- model
-
-Max 12 words.
-                            """
-                        },
-
-                        {
-                            "file_data": {
-                                "file_uri": image_url
-                            }
-                        }
-
-                    ]
-                }
-
-            ]
-        )
-
-        text = response.text.strip().lower()
-
-        print("GEMINI:")
-        print(text)
-
-        return text
-
-    except Exception as e:
-
-        print("GEMINI FAILED:")
-        print(e)
-
-        return ""
+        return json.loads(text)
+    except:
+        return {
+            "object_type": "",
+            "designer": "",
+            "brand": "",
+            "search_query": "",
+            "danish_keywords": []
+        }
 
 
 # =========================================================
-# QUERY BUILDER
+# SEARCH BUILDER
 # =========================================================
 
-def build_search_query(
+def build_search_query(vision_data, gemini_data):
 
-    vision_data,
-    gemini_text
+    web_entities = (
+        vision_data["responses"][0]
+        .get("webDetection", {})
+        .get("webEntities", [])
+    )
 
-):
+    labels = (
+        vision_data["responses"][0]
+        .get("labelAnnotations", [])
+    )
 
-    parts = []
+    candidates = []
 
-    # =====================================================
     # GEMINI FIRST
-    # =====================================================
 
-    if gemini_text:
+    search_query = (
+        gemini_data.get("search_query") or ""
+    ).strip()
 
-        parts.extend(
-            gemini_text.split()
+    if search_query:
+        candidates.append(search_query)
+
+    designer = (
+        gemini_data.get("designer") or ""
+    ).strip()
+
+    brand = (
+        gemini_data.get("brand") or ""
+    ).strip()
+
+    object_type = (
+        gemini_data.get("object_type") or ""
+    ).strip()
+
+    if designer and object_type:
+        candidates.append(
+            f"{designer} {object_type}"
         )
 
-    # =====================================================
+    if brand and object_type:
+        candidates.append(
+            f"{brand} {object_type}"
+        )
+
     # WEB ENTITIES
-    # =====================================================
 
-    for item in vision_data["web_entities"]:
+    for entity in web_entities:
 
-        item = item.lower()
+        desc = (
+            entity.get("description") or ""
+        ).lower()
+
+        score = entity.get("score", 0)
+
+        if score < 1:
+            continue
+
+        if len(desc) < 3:
+            continue
+
+        candidates.append(desc)
+
+    # LABEL FALLBACK
+
+    allowed_labels = [
+        "chair",
+        "lamp",
+        "table",
+        "furniture",
+        "sofa",
+        "stool",
+    ]
+
+    label_map = {
+        "chair": "stol",
+        "lamp": "lampe",
+        "table": "bord",
+        "furniture": "møbel",
+        "sofa": "sofa",
+        "stool": "skammel",
+    }
+
+    for label in labels:
+
+        desc = (
+            label.get("description") or ""
+        ).lower()
+
+        if desc in allowed_labels:
+
+            candidates.append(
+                label_map.get(desc, desc)
+            )
+
+    # CLEANUP
+
+    cleaned = []
+
+    for item in candidates:
+
+        item = item.strip().lower()
 
         if len(item) < 3:
             continue
 
-        parts.extend(
-            item.split()
-        )
-
-    # =====================================================
-    # LABELS (LOW PRIORITY)
-    # =====================================================
-
-    bad_words = [
-
-        "wood",
-        "plywood",
-        "hardwood",
-        "flooring",
-        "varnish",
-        "steel",
-        "plank",
-        "material",
-        "brown",
-        "rectangle",
-        "line",
-        "floor",
-    ]
-
-    translations = {
-
-        "chair": "stol",
-        "bar stool": "barstol",
-        "table": "bord",
-        "lamp": "lampe",
-        "sofa": "sofa",
-        "armchair": "lænestol",
-    }
-
-    for label in vision_data["labels"]:
-
-        label = label.lower()
-
-        if label in bad_words:
-            continue
-
-        if label in translations:
-
-            parts.append(
-                translations[label]
-            )
-
-    # =====================================================
-    # CLEANUP
-    # =====================================================
-
-    cleaned = []
-
-    seen = set()
-
-    for word in parts:
-
-        word = (
-            word
-            .replace(",", "")
-            .replace(".", "")
-            .strip()
-            .lower()
-        )
-
-        if len(word) < 2:
-            continue
-
-        if word in seen:
-            continue
-
-        seen.add(word)
-
-        cleaned.append(word)
-
-    # fallback
+        if item not in cleaned:
+            cleaned.append(item)
 
     if not cleaned:
-        return "design møbel"
+        return "design"
 
-    final_query = " ".join(
-        cleaned[:10]
-    )
-
-    print("FINAL QUERY:")
-    print(final_query)
-
-    return final_query
+    return cleaned[0]
 
 
 # =========================================================
@@ -459,7 +353,7 @@ class DBAScraper:
             f"https://www.dba.dk/soeg/?soeg={query}"
         )
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
 
             response = await client.get(
                 url,
@@ -497,7 +391,6 @@ class DBAScraper:
             )
 
             if price_match:
-
                 price = safe_int(
                     price_match.group(1)
                 )
@@ -514,15 +407,10 @@ class DBAScraper:
                 )
 
             results.append({
-
                 "source": "DBA",
-
                 "title": title,
-
                 "price": price,
-
                 "image": image,
-
                 "url": url,
             })
 
@@ -541,7 +429,7 @@ class LauritzScraper:
             f"https://www.lauritz.com/da/auctions/search/{query}"
         )
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
 
             response = await client.get(
                 url,
@@ -602,10 +490,7 @@ class LauritzScraper:
                 "defaultImageUrl"
             )
 
-            if (
-                image
-                and not image.startswith("http")
-            ):
+            if image and not image.startswith("http"):
                 image = (
                     f"https://images.lauritz.com/{image}"
                 )
@@ -632,53 +517,16 @@ class LauritzScraper:
             lot_id = item.get("lotId")
 
             results.append({
-
                 "source": "Lauritz",
-
                 "title": title,
-
                 "price": price,
-
                 "image": image,
-
                 "url": (
                     f"https://www.lauritz.com/da/auction/{lot_id}"
                 ),
             })
 
         return results
-
-
-# =========================================================
-# RELEVANCE SCORING
-# =========================================================
-
-def score_results(results, query):
-
-    query_words = query.lower().split()
-
-    for item in results:
-
-        score = 0
-
-        title = (
-            item.get("title", "")
-            .lower()
-        )
-
-        for word in query_words:
-
-            if word in title:
-                score += 5
-
-        item["score"] = score
-
-    results.sort(
-        key=lambda x: x.get("score", 0),
-        reverse=True
-    )
-
-    return results
 
 
 # =========================================================
@@ -690,143 +538,56 @@ class PricingEngine:
     def __init__(self):
 
         self.dba = DBAScraper()
-
         self.lauritz = LauritzScraper()
 
     async def analyze(self, image_url: str):
 
-        # =====================================================
-        # GOOGLE VISION
-        # =====================================================
-
-        vision_data = await detect_vision(
+        vision_data = await detect_with_google_vision(
             image_url
         )
 
-        # =====================================================
-        # GEMINI
-        # =====================================================
-
-        gemini_text = await detect_with_gemini(
+        gemini_data = await detect_with_gemini(
             image_url
         )
-
-        # =====================================================
-        # QUERY
-        # =====================================================
 
         query = build_search_query(
-
             vision_data,
-            gemini_text
+            gemini_data
         )
 
-        # =====================================================
-        # SCRAPERS
-        # =====================================================
+        print("SEARCH QUERY:", query)
 
         all_results = []
 
-        # DBA
+        dba_results = await self.dba.search(query)
 
-        try:
+        print("DBA:", len(dba_results))
 
-            dba_results = await self.dba.search(
-                query
-            )
+        all_results.extend(dba_results)
 
-            print(
-                "DBA:",
-                len(dba_results)
-            )
+        lauritz_results = await self.lauritz.search(query)
 
-            all_results.extend(
-                dba_results
-            )
+        print("Lauritz:", len(lauritz_results))
 
-        except Exception as e:
-
-            print("DBA FAILED:")
-            print(e)
-
-        # Lauritz
-
-        try:
-
-            lauritz_results = (
-                await self.lauritz.search(
-                    query
-                )
-            )
-
-            print(
-                "Lauritz:",
-                len(lauritz_results)
-            )
-
-            all_results.extend(
-                lauritz_results
-            )
-
-        except Exception as e:
-
-            print("LaurITZ FAILED:")
-            print(e)
-
-        # =====================================================
-        # CLEANUP
-        # =====================================================
+        all_results.extend(lauritz_results)
 
         all_results = [
-
             item for item in all_results
-
             if item.get("title")
         ]
 
-        # =====================================================
-        # RELEVANCE
-        # =====================================================
-
-        all_results = score_results(
-
-            all_results,
-            query
-        )
-
-        # =====================================================
-        # PRICE
-        # =====================================================
-
         estimated_price = average_price(
-            all_results[:10]
+            all_results
         )
-
-        print("TOTAL:")
-        print(len(all_results))
-
-        print("ESTIMATED PRICE:")
-        print(estimated_price)
-
-        # =====================================================
-        # RESPONSE
-        # =====================================================
 
         return {
-
             "success": True,
-
             "query": query,
-
-            "gemini": gemini_text,
-
-            "vision": vision_data,
-
             "estimated_price": estimated_price,
-
             "count": len(all_results),
-
             "results": all_results[:20],
+            "vision": vision_data,
+            "gemini": gemini_data,
         }
 
 
@@ -855,9 +616,7 @@ async def analyze(
     if not image_url:
 
         return {
-
             "success": False,
-
             "error": "Missing image_url"
         }
 
