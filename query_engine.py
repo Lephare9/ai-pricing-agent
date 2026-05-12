@@ -1,6 +1,5 @@
 # query_engine.py
 
-```python
 import re
 from difflib import SequenceMatcher
 
@@ -131,12 +130,4 @@ def build_queries(gemini_data, vision_labels):
     )
 
     return queries[:2]
-```
 
-# Upload instruktion
-
-Erstat hele din nuværende:
-
-* query_engine.py
-
-med denne fil og deploy igen til Railway.
