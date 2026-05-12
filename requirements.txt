@@ -1,9 +1,9 @@
 fastapi
 uvicorn
-google-generativeai
-pillow
 httpx
-python-multipart
-cloudinary
 beautifulsoup4
 lxml
+python-multipart
+google-generativeai
+numpy
+pydantic
