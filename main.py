@@ -204,6 +204,14 @@ async def analyze(data: AnalyzeRequest):
 
     print("QUERIES:", queries)
 
+    if not queries:
+
+        return {
+            "success": False,
+            "error": "Ingen relevante søgninger fundet",
+            "vision_labels": vision_labels,
+        }
+
     dba = DBAScraper()
     lauritz = LauritzScraper()
 
@@ -267,7 +275,11 @@ async def analyze(data: AnalyzeRequest):
         "title": (
             gemini_data.get("title")
             if gemini_data
-            else queries[0]
+            else (
+                queries[0]
+                if queries
+                else "Ukendt objekt"
+            )
         ),
 
         "category": (
