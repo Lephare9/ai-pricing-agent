@@ -1,6 +1,8 @@
+# query_engine.py
+
+```python
 import re
 from difflib import SequenceMatcher
-
 
 GOOD_TRANSLATIONS = {
     "chair": "stol",
@@ -16,7 +18,6 @@ GOOD_TRANSLATIONS = {
     "bookshelf": "reol",
     "sofa": "sofa",
 }
-
 
 BAD_LABELS = [
     "wood",
@@ -35,7 +36,6 @@ BAD_LABELS = [
     "building material",
 ]
 
-
 IMPORTANT_WORDS = [
     "wegner",
     "mogensen",
@@ -50,16 +50,12 @@ IMPORTANT_WORDS = [
 
 
 def normalize_query(q):
-
     q = q.lower().strip()
-
     q = re.sub(r"\s+", " ", q)
-
     return q
 
 
 def similarity(a, b):
-
     return SequenceMatcher(
         None,
         a,
@@ -68,9 +64,79 @@ def similarity(a, b):
 
 
 def deduplicate_queries(queries):
-
     unique = []
 
     for q in queries:
+        q = normalize_query(q)
+        duplicate = False
+
+        for existing in unique:
+            if similarity(q, existing) > 0.82:
+                duplicate = True
+                break
+
+        if not duplicate:
+            unique.append(q)
+
+    return unique
+
+
+def score_query(query):
+    score = 0
+    words = query.split()
+
+    for word in words:
+        if word in IMPORTANT_WORDS:
+            score += 2
+        else:
+            score += 1
+
+    return score
+
+
+def build_queries(gemini_data, vision_labels):
+    queries = []
+
+    if gemini_data:
+        primary = gemini_data.get("primary_query")
+
+        if primary:
+            queries.append(primary)
+
+        secondary = gemini_data.get(
+            "secondary_queries",
+            []
+        )
+
+        queries.extend(secondary)
+
+    else:
+        for label in vision_labels:
+            label = label.lower()
+
+            if label in BAD_LABELS:
+                continue
+
+            translated = GOOD_TRANSLATIONS.get(label)
+
+            if translated:
+                queries.append(translated)
+
+    queries = deduplicate_queries(queries)
+
+    queries = sorted(
+        queries,
+        key=score_query,
+        reverse=True
+    )
 
     return queries[:2]
+```
+
+# Upload instruktion
+
+Erstat hele din nuværende:
+
+* query_engine.py
+
+med denne fil og deploy igen til Railway.
