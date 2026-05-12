@@ -68,6 +68,39 @@ def remove_extreme_outliers(prices):
 def estimate_price(prices):
 
     if not prices:
-
         return {
+            "estimated": None,
+            "low": None,
+            "high": None,
+        }
+
+    prices = sorted(prices)
+
+    return {
+        "estimated": int(statistics.median(prices)),
+        "low": int(np.percentile(prices, 20)),
+        "high": int(np.percentile(prices, 80)),
+    }
+
+
+def calculate_confidence(prices):
+
+    if len(prices) < 3:
+        return "Lav"
+
+    spread = max(prices) - min(prices)
+
+    median = statistics.median(prices)
+
+    if median == 0:
+        return "Lav"
+
+    ratio = spread / median
+
+    if ratio < 0.40 and len(prices) >= 8:
+        return "Høj"
+
+    if ratio < 0.80:
+        return "Medium"
+
     return "Lav"
