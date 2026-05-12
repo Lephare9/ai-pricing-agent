@@ -9,7 +9,13 @@ from utils import safe_int
 
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
 }
 
 
@@ -23,7 +29,11 @@ def normalize_title(title):
         title
     )
 
-    title = re.sub(r"\s+", " ", title)
+    title = re.sub(
+        r"\s+",
+        " ",
+        title
+    )
 
     return title.strip()
 
@@ -72,16 +82,26 @@ class DBAScraper:
     async def search(self, query):
 
         url = (
-            f"https://www.dba.dk/soeg/?soeg={query}"
+            "https://www.dba.dk/soeg/"
+            f"?soeg={query}"
         )
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        print("\n===================")
+        print("DBA QUERY:", query)
+        print("DBA URL:", url)
+
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+        ) as client:
 
             response = await client.get(
                 url,
                 headers=HEADERS,
-                follow_redirects=True,
             )
+
+        print("DBA STATUS:", response.status_code)
+        print("DBA HTML:", response.text[:1000])
 
         soup = BeautifulSoup(
             response.text,
@@ -90,14 +110,24 @@ class DBAScraper:
 
         results = []
 
-        cards = soup.select("article")
+        cards = soup.find_all(
+            [
+                "article",
+                "div"
+            ]
+        )
 
-        for card in cards[:20]:
+        print("DBA CARDS FOUND:", len(cards))
+
+        for card in cards:
 
             text = card.get_text(
                 " ",
                 strip=True
             )
+
+            if not text:
+                continue
 
             price_match = re.search(
                 r"(\\d[\\d\\.]*)\\s*kr",
@@ -115,11 +145,17 @@ class DBAScraper:
             if not price:
                 continue
 
+            if price < 25:
+                continue
+
+            title = text[:250]
+
             image = None
 
-            img = card.select_one("img")
+            img = card.find("img")
 
             if img:
+
                 image = (
                     img.get("src")
                     or img.get("data-src")
@@ -127,13 +163,15 @@ class DBAScraper:
 
             results.append({
                 "source": "DBA",
-                "title": text[:200],
+                "title": title,
                 "price": price,
                 "image": image,
                 "url": url,
             })
 
-        return results
+        print("DBA RESULTS:", len(results))
+
+        return results[:40]
 
 
 class LauritzScraper:
@@ -141,16 +179,27 @@ class LauritzScraper:
     async def search(self, query):
 
         url = (
-            f"https://www.lauritz.com/da/auctions/search/{query}"
+            "https://www.lauritz.com/da/"
+            f"auctions/search/{query}"
         )
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        print("\n===================")
+        print("LAURITZ QUERY:", query)
+
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+        ) as client:
 
             response = await client.get(
                 url,
                 headers=HEADERS,
-                follow_redirects=True,
             )
+
+        print(
+            "LAURITZ STATUS:",
+            response.status_code
+        )
 
         html = response.text
 
@@ -161,9 +210,16 @@ class LauritzScraper:
         )
 
         if not match:
+
+            print(
+                "LAURITZ: NO JSON FOUND"
+            )
+
             return []
 
-        data = json.loads(match.group(1))
+        data = json.loads(
+            match.group(1)
+        )
 
         found = []
 
@@ -190,6 +246,11 @@ class LauritzScraper:
 
         walk(data)
 
+        print(
+            "LAURITZ ITEMS FOUND:",
+            len(found)
+        )
+
         results = []
 
         for item in found:
@@ -199,7 +260,10 @@ class LauritzScraper:
             if not title:
                 continue
 
-            prices = item.get("prices", {})
+            prices = item.get(
+                "prices",
+                {}
+            )
 
             estimate = (
                 prices.get("estimated", {})
@@ -213,7 +277,10 @@ class LauritzScraper:
                 .get("amount")
             )
 
-            price = current_bid or estimate
+            price = (
+                current_bid
+                or estimate
+            )
 
             if not price:
                 continue
@@ -222,7 +289,10 @@ class LauritzScraper:
                 "defaultImageUrl"
             )
 
-            if image and not image.startswith("http"):
+            if (
+                image
+                and not image.startswith("http")
+            ):
                 image = (
                     "https://images.lauritz.com/"
                     + image
@@ -236,4 +306,9 @@ class LauritzScraper:
                 "url": url,
             })
 
-        return results
+        print(
+            "LAURITZ RESULTS:",
+            len(results)
+        )
+
+        return results[:40]
