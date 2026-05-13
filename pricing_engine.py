@@ -1,8 +1,13 @@
-import statistics
-import numpy as np
+def calculate_price(results):
 
+    if not results:
 
-def clean_prices(results):
+        return {
+            "estimated": None,
+            "low": None,
+            "high": None,
+            "confidence": "low",
+        }
 
     prices = []
 
@@ -10,97 +15,40 @@ def clean_prices(results):
 
         price = item.get("price")
 
-        if not price:
-            continue
-
-        if price <= 0:
-            continue
-
-        if price > 500000:
-            continue
-
-        prices.append(price)
-
-    return prices
-
-
-def remove_outliers(prices):
-
-    if len(prices) < 4:
-        return prices
-
-    q1 = np.percentile(prices, 25)
-    q3 = np.percentile(prices, 75)
-
-    iqr = q3 - q1
-
-    low = q1 - 1.5 * iqr
-    high = q3 + 1.5 * iqr
-
-    return [
-        p for p in prices
-        if low <= p <= high
-    ]
-
-
-def remove_extreme_outliers(prices):
-
-    if len(prices) < 6:
-        return prices
-
-    median = statistics.median(prices)
-
-    filtered = []
-
-    for p in prices:
-
-        if p > median * 4:
-            continue
-
-        if p < median * 0.25:
-            continue
-
-        filtered.append(p)
-
-    return filtered
-
-
-def estimate_price(prices):
+        if isinstance(price, int):
+            prices.append(price)
 
     if not prices:
+
         return {
             "estimated": None,
             "low": None,
             "high": None,
+            "confidence": "low",
         }
 
-    prices = sorted(prices)
+    prices.sort()
+
+    # trim outliers
+    if len(prices) >= 6:
+        prices = prices[1:-1]
+
+    avg = int(
+        sum(prices) / len(prices)
+    )
+
+    low = min(prices)
+
+    high = max(prices)
+
+    confidence = "medium"
+
+    if len(prices) >= 8:
+        confidence = "high"
 
     return {
-        "estimated": int(statistics.median(prices)),
-        "low": int(np.percentile(prices, 20)),
-        "high": int(np.percentile(prices, 80)),
+        "estimated": avg,
+        "low": low,
+        "high": high,
+        "confidence": confidence,
     }
-
-
-def calculate_confidence(prices):
-
-    if len(prices) < 3:
-        return "Lav"
-
-    spread = max(prices) - min(prices)
-
-    median = statistics.median(prices)
-
-    if median == 0:
-        return "Lav"
-
-    ratio = spread / median
-
-    if ratio < 0.40 and len(prices) >= 8:
-        return "Høj"
-
-    if ratio < 0.80:
-        return "Medium"
-
-    return "Lav"

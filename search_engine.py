@@ -1,130 +1,72 @@
 import re
-import json
 import httpx
 
 from bs4 import BeautifulSoup
-from difflib import SequenceMatcher
 
 from utils import safe_int
 
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/124.0 Safari/537.36"
+        "Mozilla/5.0"
     )
 }
 
 
-def normalize_title(title):
+async def search_dba(query):
 
-    title = title.lower()
+    print("")
+    print("===================")
+    print(f"DBA QUERY: {query}")
 
-    title = re.sub(
-        r"[^a-zæøå0-9 ]",
-        "",
-        title
+    url = (
+        "https://www.dba.dk/soeg/"
+        f"?soeg={query}"
     )
 
-    title = re.sub(
-        r"\s+",
-        " ",
-        title
-    )
+    results = []
 
-    return title.strip()
-
-
-def deduplicate_results(results):
-
-    unique = []
-
-    for item in results:
-
-        title = normalize_title(
-            item.get("title", "")
-        )
-
-        price = item.get("price")
-
-        duplicate = False
-
-        for existing in unique:
-
-            existing_title = normalize_title(
-                existing.get("title", "")
-            )
-
-            sim = SequenceMatcher(
-                None,
-                title,
-                existing_title
-            ).ratio()
-
-            if (
-                sim > 0.90
-                and existing.get("price") == price
-            ):
-                duplicate = True
-                break
-
-        if not duplicate:
-            unique.append(item)
-
-    return unique
-
-
-class DBAScraper:
-
-    async def search(self, query):
-
-        url = (
-            "https://www.dba.dk/soeg/"
-            f"?soeg={query}"
-        )
-
-        print("\n===================")
-        print("DBA QUERY:", query)
+    try:
 
         async with httpx.AsyncClient(
-            timeout=30,
+            timeout=20,
             follow_redirects=True,
+            headers=HEADERS,
         ) as client:
 
-            response = await client.get(
-                url,
-                headers=HEADERS,
-            )
+            response = await client.get(url)
+
+        print(
+            f"DBA STATUS: {response.status_code}"
+        )
+
+        html = response.text
 
         soup = BeautifulSoup(
-            response.text,
+            html,
             "html.parser"
         )
 
-        results = []
-
-        cards = soup.find_all(
-            [
-                "article",
-                "div"
-            ]
+        cards = soup.select(
+            '[class*="listing"], article'
         )
 
-        for card in cards:
+        print(
+            f"DBA RESULTS: {len(cards)}"
+        )
+
+        for card in cards[:30]:
 
             text = card.get_text(
                 " ",
                 strip=True
             )
 
-            if not text:
+            if len(text) < 20:
                 continue
 
             price_match = re.search(
-                r"(\d[\d\.]*)\s*kr",
+                r'(\d[\d\. ]*)\s*kr',
                 text,
                 re.I
             )
@@ -139,133 +81,54 @@ class DBAScraper:
             if not price:
                 continue
 
-            if price < 50:
+            if price < 25:
                 continue
 
             if price > 100000:
                 continue
 
-            title = text[:140]
+            lines = text.split()
 
-            words = title.split()
-
-            clean_title = " ".join(
-                words[:18]
+            title = " ".join(
+                lines[:18]
             )
 
-            if len(clean_title) < 4:
-                continue
+            title = title.strip()
 
             results.append({
-                "source": "DBA",
-                "title": clean_title,
+                "title": title,
                 "price": price,
-                "url": url,
             })
 
-        print("DBA RESULTS:", len(results))
+        # dedupe
+        unique = []
 
-        return results[:40]
+        seen = set()
 
+        for item in results:
 
-class LauritzScraper:
-
-    async def search(self, query):
-
-        url = (
-            "https://www.lauritz.com/da/"
-            f"auctions/search/{query}"
-        )
-
-        async with httpx.AsyncClient(
-            timeout=30,
-            follow_redirects=True,
-        ) as client:
-
-            response = await client.get(
-                url,
-                headers=HEADERS,
+            key = (
+                item["title"][:40],
+                item["price"]
             )
 
-        html = response.text
-
-        match = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html,
-            re.DOTALL,
-        )
-
-        if not match:
-            return []
-
-        data = json.loads(
-            match.group(1)
-        )
-
-        found = []
-
-        def walk(obj):
-
-            if isinstance(obj, dict):
-
-                if (
-                    "title" in obj
-                    and (
-                        "lotId" in obj
-                        or "auctionId" in obj
-                    )
-                ):
-                    found.append(obj)
-
-                for value in obj.values():
-                    walk(value)
-
-            elif isinstance(obj, list):
-
-                for item in obj:
-                    walk(item)
-
-        walk(data)
-
-        results = []
-
-        for item in found:
-
-            title = item.get("title")
-
-            if not title:
+            if key in seen:
                 continue
 
-            prices = item.get(
-                "prices",
-                {}
-            )
+            seen.add(key)
 
-            estimate = (
-                prices.get("estimated", {})
-                .get("showroom", {})
-                .get("amount")
-            )
+            unique.append(item)
 
-            current_bid = (
-                prices.get("currentBid", {})
-                .get("showroom", {})
-                .get("amount")
-            )
+        print(
+            f"DBA CLEAN RESULTS: {len(unique)}"
+        )
 
-            price = (
-                current_bid
-                or estimate
-            )
+        return unique[:10]
 
-            if not price:
-                continue
+    except Exception as e:
 
-            results.append({
-                "source": "Lauritz",
-                "title": title[:140],
-                "price": price,
-                "url": url,
-            })
+        print(
+            f"DBA ERROR: {e}"
+        )
 
-        return results[:20]
+        return []
