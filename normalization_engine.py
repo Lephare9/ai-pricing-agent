@@ -1,297 +1,204 @@
 import re
 
 
-NORMALIZATION_RULES = [
+STOPWORDS = {
 
-    # TØNDER
+    # GENEREL STØJ
+    "vintage",
+    "moderne",
+    "flot",
+    "smuk",
+    "fed",
+    "retro",
+    "klassisk",
+    "stil",
+    "design",
 
-    {
-        "contains": [
-            "barrel",
-        ],
-        "query": "trætønde",
-    },
+    # FARVER
+    "sort",
+    "hvid",
+    "grå",
+    "graa",
+    "mørk",
+    "mørkeblå",
+    "mørkebla",
+    "blå",
+    "bla",
+    "lysegrå",
+    "lysegraa",
+    "beige",
+    "brun",
+    "sølv",
+    "solv",
+    "krom",
 
-    {
-        "contains": [
-            "wine barrel",
-        ],
-        "query": "vintønde",
-    },
+    # STØJ FRA GEMINI
+    "med",
+    "som",
+    "til",
+    "for",
+    "og",
+    "the",
 
-    {
-        "contains": [
-            "whiskey barrel",
-        ],
-        "query": "whiskyfad",
-    },
+    # MATERIALER SOM OFTE FORSTYRRER
+    "metal",
+    "plast",
+    "plastic"
+}
 
-    # STOLE
 
-    {
-        "contains": [
-            "wicker",
-            "chair",
-        ],
-        "query": "kurvestol",
-    },
+IMPORTANT_WORDS = {
 
-    {
-        "contains": [
-            "rattan",
-            "chair",
-        ],
-        "query": "rattanstol",
-    },
-
-    {
-        "contains": [
-            "molded",
-            "chair",
-        ],
-        "query": "skalstol",
-    },
-
-    {
-        "contains": [
-            "plywood",
-            "chair",
-        ],
-        "query": "skalstol",
-    },
-
-    {
-        "contains": [
-            "metal",
-            "chair",
-        ],
-        "query": "metalstol",
-    },
-
-    {
-        "contains": [
-            "wood",
-            "chair",
-        ],
-        "query": "træstol",
-    },
-
-    {
-        "contains": [
-            "leather",
-            "chair",
-        ],
-        "query": "læderstol",
-    },
-
-    # BORDE
-
-    {
-        "contains": [
-            "coffee",
-            "table",
-        ],
-        "query": "sofabord",
-    },
-
-    {
-        "contains": [
-            "dining",
-            "table",
-        ],
-        "query": "spisebord",
-    },
-
-    {
-        "contains": [
-            "wooden",
-            "table",
-        ],
-        "query": "træbord",
-    },
+    # MØBLER
+    "sofa",
+    "lænestol",
+    "laenestol",
+    "stol",
+    "skalstol",
+    "kurvestol",
+    "bord",
+    "spisebord",
+    "reol",
+    "kommode",
 
     # LAMPER
+    "lampe",
+    "bordlampe",
+    "gulvlampe",
+    "pendel",
 
-    {
-        "contains": [
-            "floor",
-            "lamp",
-        ],
-        "query": "gulvlampe",
-    },
+    # VVS
+    "armatur",
+    "vandhane",
+    "blandingsbatteri",
 
-    {
-        "contains": [
-            "desk",
-            "lamp",
-        ],
-        "query": "bordlampe",
-    },
+    # MATERIALER SOM ER VIGTIGE
+    "keramik",
+    "træ",
+    "trae",
+    "rattan",
+    "flet",
 
-    {
-        "contains": [
-            "pendant",
-            "light",
-        ],
-        "query": "pendel",
-    },
-
-    {
-        "contains": [
-            "metal",
-            "lamp",
-        ],
-        "query": "metallampe",
-    },
-
-    # OPBEVARING
-
-    {
-        "contains": [
-            "cabinet",
-        ],
-        "query": "skab",
-    },
-
-    {
-        "contains": [
-            "bookcase",
-        ],
-        "query": "bogreol",
-    },
-
-    {
-        "contains": [
-            "dresser",
-        ],
-        "query": "kommode",
-    },
-
-    {
-        "contains": [
-            "shelf",
-        ],
-        "query": "reol",
-    },
-
-    # SOFA
-
-    {
-        "contains": [
-            "leather",
-            "sofa",
-        ],
-        "query": "lædersofa",
-    },
-
-    {
-        "contains": [
-            "fabric",
-            "sofa",
-        ],
-        "query": "stofsofa",
-    },
-
-    # SPEJL
-
-    {
-        "contains": [
-            "mirror",
-        ],
-        "query": "spejl",
-    },
-]
-
-
-BROAD_WORDS = [
-
-    "wood",
-    "metal",
-    "object",
-    "design",
-    "furniture",
-    "chair",
-    "table",
-    "lamp",
-    "room",
-    "interior",
-    "home",
-]
-
-
-def clean_text(text):
-
-    text = text.lower()
-
-    text = re.sub(
-        r"[^a-z0-9æøå ]",
-        " ",
-        text,
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-
-    return text.strip()
+    # BRANDS
+    "grohe",
+    "ikea",
+    "hay",
+    "fritz",
+    "hans",
+    "wegner"
+}
 
 
 def normalize_query(text):
 
     if not text:
-        return None
+        return ""
 
-    text = clean_text(text)
+    text = text.lower()
 
-    # regelbaseret semantic mapping
-    for rule in NORMALIZATION_RULES:
+    text = text.replace(",", " ")
 
-        matched = True
+    words = re.findall(
+        r"\w+",
+        text
+    )
 
-        for word in rule["contains"]:
-
-            if word not in text:
-                matched = False
-                break
-
-        if matched:
-
-            print(
-                f"NORMALIZED: {text} -> {rule['query']}"
-            )
-
-            return rule["query"]
-
-    # fallback cleanup
-    words = text.split()
-
-    cleaned_words = []
+    cleaned = []
 
     for word in words:
-
-        if word in BROAD_WORDS:
-            continue
 
         if len(word) < 3:
             continue
 
-        cleaned_words.append(word)
+        # behold vigtige ord
+        if word in IMPORTANT_WORDS:
 
-    # forsøg compound
-    if len(cleaned_words) >= 2:
+            if word not in cleaned:
+                cleaned.append(word)
 
-        compound = (
-            cleaned_words[0]
-            + cleaned_words[1]
+            continue
+
+        # fjern støj
+        if word in STOPWORDS:
+            continue
+
+        # skip tal
+        if word.isdigit():
+            continue
+
+        # skip meget lange mærkelige ord
+        if len(word) > 24:
+            continue
+
+        cleaned.append(word)
+
+    # DBA fungerer bedst med få ord
+    cleaned = cleaned[:4]
+
+    # DUPLIKATFILTER
+    final = []
+
+    seen = set()
+
+    for word in cleaned:
+
+        if word in seen:
+            continue
+
+        seen.add(word)
+
+        final.append(word)
+
+    # SPECIAL CASES
+
+    # kurv + stol => kurvestol
+    if "kurv" in final and "stol" in final:
+
+        final = [
+            x for x in final
+            if x not in ["kurv", "stol"]
+        ]
+
+        final.insert(
+            0,
+            "kurvestol"
         )
 
-        return compound
+    # keramik + lampe
+    if "keramik" in final and "bordlampe" in final:
 
-    # enkeltord fallback
-    if cleaned_words:
+        return "keramik bordlampe"
 
-        return cleaned_words[0]
+    # grohe + blandingsbatteri
+    if (
+        "grohe" in final
+        and "blandingsbatteri" in final
+    ):
 
-    return None
+        return "grohe blandingsbatteri"
+
+    # sofa prioritet
+    if "sofa" in final:
+
+        important = []
+
+        for word in final:
+
+            if word in [
+                "sofa",
+                "lænestol",
+                "laenestol",
+                "rattan",
+                "flet",
+                "træ",
+                "trae"
+            ]:
+
+                important.append(word)
+
+        if important:
+            return " ".join(
+                important[:3]
+            )
+
+    return " ".join(final[:4])
