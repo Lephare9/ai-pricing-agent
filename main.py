@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import google.generativeai as genai
 
 from fallback_engine import build_queries
+from normalization_engine import normalize_query
 from pricing_engine import calculate_price
 from search_engine import search_dba
 
@@ -24,6 +25,7 @@ GEMINI_API_KEY = os.getenv(
 
 
 if GEMINI_API_KEY:
+
     genai.configure(
         api_key=GEMINI_API_KEY
     )
@@ -42,6 +44,7 @@ app.add_middleware(
 
 
 class AnalyzeRequest(BaseModel):
+
     image_url: str
 
 
@@ -67,16 +70,22 @@ async def analyze_with_vision(image_url):
         )
 
         payload = {
+
             "requests": [
+
                 {
+
                     "image": {
                         "content": image_base64
                     },
+
                     "features": [
+
                         {
                             "type": "LABEL_DETECTION",
                             "maxResults": 15
                         },
+
                         {
                             "type": "WEB_DETECTION",
                             "maxResults": 10
@@ -133,10 +142,6 @@ async def analyze_with_vision(image_url):
             []
         )
 
-        print(
-            f"WEB ENTITIES: {web_entities[:5]}"
-        )
-
         for entity in web_entities:
 
             desc = entity.get(
@@ -144,6 +149,7 @@ async def analyze_with_vision(image_url):
             )
 
             if desc and desc not in labels:
+
                 labels.append(desc)
 
         return labels
@@ -257,7 +263,7 @@ async def analyze(data: AnalyzeRequest):
 
     queries = []
 
-    # Gemini queries først
+    # GEMINI QUERY
     if gemini_data:
 
         primary = gemini_data.get(
@@ -265,23 +271,25 @@ async def analyze(data: AnalyzeRequest):
         )
 
         if primary:
-            queries.append(primary)
 
-        secondary = gemini_data.get(
-            "secondary_queries",
-            []
-        )
+            normalized = normalize_query(
+                primary
+            )
 
-        queries.extend(secondary)
+            if normalized:
+                queries.append(normalized)
 
-    # fallback queries
+            else:
+                queries.append(primary)
+
+    # FALLBACK
     if not queries:
 
         queries = build_queries(
             vision_labels
         )
 
-    # cleanup
+    # CLEANUP
     cleaned_queries = []
 
     seen = set()
@@ -306,8 +314,9 @@ async def analyze(data: AnalyzeRequest):
         f"QUERIES: {queries}"
     )
 
-    all_results = []
+    final_results = []
 
+    # CASCADING SEARCH
     for query in queries:
 
         print("")
@@ -321,16 +330,28 @@ async def analyze(data: AnalyzeRequest):
             f"DBA {query} {len(dba_results)}"
         )
 
-        all_results.extend(
-            dba_results
-        )
+        # hvis gode hits:
+        # stop her
+        if len(dba_results) >= 8:
 
-    # final dedupe
+            final_results = dba_results
+
+            print(
+                f"GOOD MATCHES USING: {query}"
+            )
+
+            break
+
+        # fallback hvis få hits
+        if not final_results:
+            final_results = dba_results
+
+    # FINAL DEDUPE
     deduped = []
 
     seen = set()
 
-    for item in all_results:
+    for item in final_results:
 
         key = (
             item.get("title"),
@@ -344,13 +365,14 @@ async def analyze(data: AnalyzeRequest):
 
         deduped.append(item)
 
-    all_results = deduped[:10]
+    final_results = deduped[:10]
 
     pricing = calculate_price(
-        all_results
+        final_results
     )
 
     return {
+
         "success": True,
 
         "title": (
@@ -379,7 +401,7 @@ async def analyze(data: AnalyzeRequest):
             "confidence"
         ],
 
-        "count": len(all_results),
+        "count": len(final_results),
 
         "queries": queries,
 
@@ -395,5 +417,13 @@ async def analyze(data: AnalyzeRequest):
             else None
         ),
 
-        "results": all_results
+        "results": [
+
+            {
+                "title": r.get("title"),
+                "price": r.get("price"),
+            }
+
+            for r in final_results
+        ]
     }
