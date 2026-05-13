@@ -1,227 +1,302 @@
-import re
+import os
+import json
 
-from difflib import SequenceMatcher
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 
+import google.generativeai as genai
 
-GOOD_TRANSLATIONS = {
-
-    "chair": "stol",
-    "armchair": "lænestol",
-    "table": "bord",
-    "lamp": "lampe",
-    "light fixture": "lampe",
-    "sofa": "sofa",
-    "wood": "træ",
-    "metal": "metal",
-    "iron": "metal",
-    "steel": "metal",
-    "leather": "læder",
-    "teak": "teak",
-    "oak": "eg",
-    "rattan": "flet",
-    "wicker": "kurv",
-    "barrel": "vintønde",
-    "keg": "vintønde",
-}
+from query_engine import optimize_query
+from pricing_engine import calculate_price
+from search_engine import search_dba
 
 
-BAD_LABELS = [
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY"
+)
 
-    "technology",
-    "electronic device",
-    "gadget",
-    "communication device",
-    "mobile phone",
-    "smartphone",
-    "graphics",
-    "font",
-    "text",
-    "room",
-    "design",
-    "creative arts",
-    "symmetry",
-    "pattern",
-    "triangle",
-    "wood stain",
-    "varnish",
-    "hardwood",
-    "plywood",
-    "brown",
-    "black",
-    "grey",
-    "silver",
-]
+if GEMINI_API_KEY:
 
-
-IMPORTANT_WORDS = [
-
-    "wegner",
-    "mogensen",
-    "ph",
-    "poulsen",
-    "teak",
-    "læder",
-    "flet",
-    "metal",
-    "skal",
-    "retro",
-    "vintage",
-]
-
-
-BAD_QUERY_WORDS = [
-
-    "sort",
-    "sorte",
-    "hvid",
-    "brun",
-    "grå",
-    "grey",
-    "silver",
-    "black",
-    "brown",
-    "modern",
-    "moderne",
-]
-
-
-def normalize_query(q):
-
-    q = q.lower().strip()
-
-    q = re.sub(
-        r"\s+",
-        " ",
-        q
+    genai.configure(
+        api_key=GEMINI_API_KEY
     )
 
-    return q
+
+app = FastAPI()
 
 
-def simplify_query(query):
-
-    words = query.lower().split()
-
-    cleaned = []
-
-    for word in words:
-
-        if word not in BAD_QUERY_WORDS:
-            cleaned.append(word)
-
-    return " ".join(cleaned)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-def similarity(a, b):
-
-    return SequenceMatcher(
-        None,
-        a,
-        b
-    ).ratio()
+# TEMP:
+# Vision disabled
+ENABLE_VISION = False
 
 
-def deduplicate_queries(queries):
+async def analyze_with_gemini(image_bytes):
 
-    unique = []
+    if not GEMINI_API_KEY:
+        return None
+
+    try:
+
+        model = genai.GenerativeModel(
+            "gemini-2.5-flash"
+        )
+
+        prompt = """
+        Analyze this used item photo.
+
+        Return ONLY valid JSON.
+
+        {
+          "title": "...",
+          "category": "...",
+          "materials": "...",
+          "condition": "...",
+          "designer": null,
+          "brand": null,
+          "designer_confidence": "low",
+          "primary_query": "...",
+          "secondary_queries": [
+            "...",
+            "..."
+          ]
+        }
+
+        Focus on Danish used marketplace search terms.
+
+        Keep titles realistic and short.
+
+        IMPORTANT:
+        Queries should match how normal people search on DBA.
+
+        Prefer:
+        - tripod gulvlampe
+        - teak kommode
+        - marokkansk læderpuf
+        - læderjakke biker
+
+        Avoid overly generic queries like:
+        - lampe
+        - stol
+        - jakke
+
+        Avoid overly detailed descriptions.
+        """
+
+        result = model.generate_content(
+            [
+                prompt,
+                {
+                    "mime_type": "image/jpeg",
+                    "data": image_bytes
+                }
+            ]
+        )
+
+        text = result.text.strip()
+
+        text = text.replace(
+            "```json",
+            ""
+        )
+
+        text = text.replace(
+            "```",
+            ""
+        )
+
+        parsed = json.loads(text)
+
+        return parsed
+
+    except Exception as e:
+
+        print(
+            f"GEMINI ERROR: {e}"
+        )
+
+        return None
+
+
+@app.get("/")
+async def root():
+
+    return {
+        "status": "ok"
+    }
+
+
+@app.post("/analyze")
+async def analyze(
+    file: UploadFile = File(...)
+):
+
+    image_bytes = await file.read()
+
+    print("")
+    print("===================")
+    print("VISION DISABLED")
+    print("===================")
+
+    gemini_data = await analyze_with_gemini(
+        image_bytes
+    )
+
+    print(
+        f"GEMINI: {gemini_data}"
+    )
+
+    queries = optimize_query(
+        gemini_data
+    )
+
+    # CLEANUP
+
+    cleaned_queries = []
+
+    seen = set()
 
     for q in queries:
 
-        q = normalize_query(q)
+        q = q.strip().lower()
 
-        duplicate = False
-
-        for existing in unique:
-
-            if similarity(q, existing) > 0.82:
-                duplicate = True
-                break
-
-        if not duplicate:
-            unique.append(q)
-
-    return unique
-
-
-def score_query(query):
-
-    score = 0
-
-    words = query.split()
-
-    for word in words:
-
-        if word in IMPORTANT_WORDS:
-            score += 2
-        else:
-            score += 1
-
-    return score
-
-
-def build_queries(
-    gemini_data,
-    vision_labels,
-    web_entities,
-):
-
-    queries = []
-
-    if gemini_data:
-
-        primary = gemini_data.get(
-            "primary_query"
-        )
-
-        if primary:
-            queries.append(primary)
-
-        secondary = gemini_data.get(
-            "secondary_queries",
-            []
-        )
-
-        queries.extend(secondary)
-
-    for entity in web_entities:
-
-        entity = entity.lower()
-
-        if len(entity) < 3:
+        if len(q) < 2:
             continue
 
-        queries.append(entity)
-
-    for label in vision_labels:
-
-        label = label.lower()
-
-        if label in BAD_LABELS:
+        if q in seen:
             continue
 
-        translated = GOOD_TRANSLATIONS.get(label)
+        seen.add(q)
 
-        if translated:
-            queries.append(translated)
+        cleaned_queries.append(q)
 
-    queries = [
-        simplify_query(q)
-        for q in queries
-    ]
+    queries = cleaned_queries[:3]
 
-    queries = [
-        q for q in queries
-        if q.strip()
-    ]
+    print("")
+    print("===================")
 
-    queries = deduplicate_queries(
-        queries
+    print(
+        f"QUERIES: {queries}"
     )
 
-    queries = sorted(
-        queries,
-        key=score_query,
-        reverse=True
+    final_results = []
+
+    # CASCADING SEARCH
+
+    for query in queries:
+
+        print("")
+        print("===================")
+
+        dba_results = await search_dba(
+            query
+        )
+
+        print(
+            f"DBA {query} {len(dba_results)}"
+        )
+
+        # GOOD MATCH
+        # stop after first good query
+
+        if len(dba_results) >= 5:
+
+            final_results = dba_results
+
+            print(
+                f"GOOD MATCHES USING: {query}"
+            )
+
+            break
+
+        # fallback
+
+        if not final_results:
+            final_results = dba_results
+
+    # FINAL DEDUPE
+
+    deduped = []
+
+    seen = set()
+
+    for item in final_results:
+
+        key = (
+            item.get("title"),
+            item.get("price")
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        deduped.append(item)
+
+    final_results = deduped[:10]
+
+    pricing = calculate_price(
+        final_results
     )
 
-    return queries[:4]
+    print("")
+    print("===================")
+
+    print(
+        f"FINAL RESULTS: {len(final_results)}"
+    )
+
+    print("===================")
+    print("")
+
+    return {
+
+        "success": True,
+
+        "title": (
+            gemini_data.get("title")
+            if gemini_data
+            else (
+                queries[0]
+                if queries
+                else "Ukendt produkt"
+            )
+        ),
+
+        "estimated_price": pricing[
+            "estimated"
+        ],
+
+        "price_low": pricing[
+            "low"
+        ],
+
+        "price_high": pricing[
+            "high"
+        ],
+
+        "confidence": pricing[
+            "confidence"
+        ],
+
+        "materials": (
+            gemini_data.get("materials")
+            if gemini_data
+            else None
+        ),
+
+        "condition": (
+            gemini_data.get("condition")
+            if gemini_data
+            else None
+        )
+    }

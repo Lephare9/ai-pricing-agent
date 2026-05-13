@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 import httpx
 
 from fastapi import FastAPI
@@ -9,15 +8,10 @@ from pydantic import BaseModel
 
 import google.generativeai as genai
 
-from fallback_engine import build_queries
-from normalization_engine import normalize_query
+from query_engine import build_queries
 from pricing_engine import calculate_price
 from search_engine import search_dba
 
-
-GOOGLE_VISION_API_KEY = os.getenv(
-    "GOOGLE_VISION_API_KEY"
-)
 
 GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY"
@@ -48,122 +42,7 @@ class AnalyzeRequest(BaseModel):
     image_url: str
 
 
-async def analyze_with_vision(image_url):
-
-    if not GOOGLE_VISION_API_KEY:
-        return []
-
-    try:
-
-        image_response = httpx.get(
-            image_url,
-            timeout=20
-        )
-
-        image_base64 = base64.b64encode(
-            image_response.content
-        ).decode("utf-8")
-
-        url = (
-            "https://vision.googleapis.com/v1/"
-            f"images:annotate?key={GOOGLE_VISION_API_KEY}"
-        )
-
-        payload = {
-
-            "requests": [
-
-                {
-
-                    "image": {
-                        "content": image_base64
-                    },
-
-                    "features": [
-
-                        {
-                            "type": "LABEL_DETECTION",
-                            "maxResults": 15
-                        },
-
-                        {
-                            "type": "WEB_DETECTION",
-                            "maxResults": 10
-                        }
-                    ]
-                }
-            ]
-        }
-
-        async with httpx.AsyncClient(
-            timeout=30
-        ) as client:
-
-            response = await client.post(
-                url,
-                json=payload
-            )
-
-        data = response.json()
-
-        labels = []
-
-        responses = data.get(
-            "responses",
-            []
-        )
-
-        if not responses:
-            return []
-
-        first = responses[0]
-
-        label_annotations = first.get(
-            "labelAnnotations",
-            []
-        )
-
-        for item in label_annotations:
-
-            desc = item.get(
-                "description"
-            )
-
-            if desc:
-                labels.append(desc)
-
-        web_detection = first.get(
-            "webDetection",
-            {}
-        )
-
-        web_entities = web_detection.get(
-            "webEntities",
-            []
-        )
-
-        for entity in web_entities:
-
-            desc = entity.get(
-                "description"
-            )
-
-            if desc and desc not in labels:
-
-                labels.append(desc)
-
-        return labels
-
-    except Exception as e:
-
-        print(
-            f"VISION ERROR: {e}"
-        )
-
-        return []
-
-
-async def analyze_with_gemini(image_url):
+async def analyze_with_gemini(image_bytes):
 
     if not GEMINI_API_KEY:
         return None
@@ -189,12 +68,17 @@ async def analyze_with_gemini(image_url):
           "designer_confidence": "low",
           "primary_query": "...",
           "secondary_queries": [
-            "...",
             "..."
           ]
         }
 
-        Focus on Danish used marketplace search terms.
+        IMPORTANT:
+        - Focus on Danish DBA marketplace wording
+        - Use SHORT search queries
+        - Prefer ONE strong DBA query
+        - Avoid long descriptions
+        - Avoid unnecessary colors
+        - Avoid generic filler words
         """
 
         result = model.generate_content(
@@ -202,9 +86,7 @@ async def analyze_with_gemini(image_url):
                 prompt,
                 {
                     "mime_type": "image/jpeg",
-                    "data": httpx.get(
-                        image_url
-                    ).content
+                    "data": image_bytes
                 }
             ]
         )
@@ -245,82 +127,77 @@ async def root():
 @app.post("/analyze")
 async def analyze(data: AnalyzeRequest):
 
-    vision_labels = await analyze_with_vision(
-        data.image_url
-    )
+    try:
 
+        print("")
+        print("===================")
+        print("")
+
+        print(
+            f"IMAGE URL: {data.image_url}"
+        )
+
+        image_response = httpx.get(
+            data.image_url,
+            timeout=30
+        )
+
+        image_bytes = image_response.content
+
+        print(
+            f"IMAGE SIZE: {len(image_bytes)} bytes"
+        )
+
+    except Exception as e:
+
+        print(
+            f"IMAGE DOWNLOAD ERROR: {e}"
+        )
+
+        return {
+            "success": False,
+            "error": "Kunne ikke hente billede"
+        }
+
+    # VISION HELT FJERNET
     print(
-        f"VISION: {vision_labels}"
+        "VISION DISABLED"
     )
 
     gemini_data = await analyze_with_gemini(
-        data.image_url
+        image_bytes
     )
 
     print(
         f"GEMINI: {gemini_data}"
     )
 
-    queries = []
+    if not gemini_data:
 
-    # GEMINI QUERY
-    if gemini_data:
+        return {
+            "success": False,
+            "error": "Gemini analyse fejlede"
+        }
 
-        primary = gemini_data.get(
-            "primary_query"
-        )
-
-        if primary:
-
-            normalized = normalize_query(
-                primary
-            )
-
-            if normalized:
-                queries.append(normalized)
-
-            else:
-                queries.append(primary)
-
-    # FALLBACK
-    if not queries:
-
-        queries = build_queries(
-            vision_labels
-        )
-
-    # CLEANUP
-    cleaned_queries = []
-
-    seen = set()
-
-    for q in queries:
-
-        q = q.strip().lower()
-
-        if len(q) < 2:
-            continue
-
-        if q in seen:
-            continue
-
-        seen.add(q)
-
-        cleaned_queries.append(q)
-
-    queries = cleaned_queries[:3]
+    queries = build_queries(
+        gemini_data
+    )
 
     print(
         f"QUERIES: {queries}"
     )
 
-    final_results = []
+    all_results = []
 
-    # CASCADING SEARCH
     for query in queries:
 
         print("")
         print("===================")
+        print("")
+
+        print(
+            f"DBA QUERY: {query}"
+        )
 
         dba_results = await search_dba(
             query
@@ -330,28 +207,16 @@ async def analyze(data: AnalyzeRequest):
             f"DBA {query} {len(dba_results)}"
         )
 
-        # hvis gode hits:
-        # stop her
-        if len(dba_results) >= 8:
+        all_results.extend(
+            dba_results
+        )
 
-            final_results = dba_results
-
-            print(
-                f"GOOD MATCHES USING: {query}"
-            )
-
-            break
-
-        # fallback hvis få hits
-        if not final_results:
-            final_results = dba_results
-
-    # FINAL DEDUPE
+    # dedupe
     deduped = []
 
     seen = set()
 
-    for item in final_results:
+    for item in all_results:
 
         key = (
             item.get("title"),
@@ -365,65 +230,52 @@ async def analyze(data: AnalyzeRequest):
 
         deduped.append(item)
 
-    final_results = deduped[:10]
+    all_results = deduped[:10]
 
     pricing = calculate_price(
-        final_results
+        all_results
+    )
+
+    print(
+        f"FINAL PRICE: {pricing}"
     )
 
     return {
 
         "success": True,
 
-        "title": (
-            gemini_data.get("title")
-            if gemini_data
-            else (
-                queries[0]
-                if queries
-                else "Ukendt produkt"
-            )
+        "title": gemini_data.get(
+            "title",
+            "Ukendt produkt"
         ),
 
-        "estimated_price": pricing[
+        "estimated_price": pricing.get(
             "estimated"
-        ],
+        ),
 
-        "price_low": pricing[
+        "price_low": pricing.get(
             "low"
-        ],
+        ),
 
-        "price_high": pricing[
+        "price_high": pricing.get(
             "high"
-        ],
+        ),
 
-        "confidence": pricing[
+        "confidence": pricing.get(
             "confidence"
-        ],
+        ),
 
-        "count": len(final_results),
+        "count": len(all_results),
 
         "queries": queries,
 
-        "materials": (
-            gemini_data.get("materials")
-            if gemini_data
-            else None
+        "materials": gemini_data.get(
+            "materials"
         ),
 
-        "condition": (
-            gemini_data.get("condition")
-            if gemini_data
-            else None
+        "condition": gemini_data.get(
+            "condition"
         ),
 
-        "results": [
-
-            {
-                "title": r.get("title"),
-                "price": r.get("price"),
-            }
-
-            for r in final_results
-        ]
+        "results": all_results
     }

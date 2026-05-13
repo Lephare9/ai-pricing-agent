@@ -1,5 +1,3 @@
-# pricing_engine.py
-
 BAD_WORDS = [
 
     "campingvogn",
@@ -26,7 +24,6 @@ def calculate_price(results):
             .lower()
         )
 
-        # filtrer irrelevante annoncer væk
         skip = False
 
         for bad in BAD_WORDS:
@@ -43,7 +40,6 @@ def calculate_price(results):
         if not isinstance(price, int):
             continue
 
-        # basic sanity checks
         if price < 50:
             continue
 
@@ -52,7 +48,6 @@ def calculate_price(results):
 
         prices.append(price)
 
-    # ingen brugbare priser
     if len(prices) < 3:
 
         return {
@@ -64,21 +59,22 @@ def calculate_price(results):
 
     prices.sort()
 
-    # fjern 2 laveste + 2 højeste
     trimmed = prices
 
+    # fjern 2 laveste + 2 højeste
     if len(prices) >= 6:
 
         trimmed = prices[2:-2]
 
-    # fallback hvis trimmed bliver tom
     if not trimmed:
 
         trimmed = prices
 
-    estimated = int(
-        sum(trimmed) / len(trimmed)
-    )
+    estimated = round(
+        (
+            sum(trimmed) / len(trimmed)
+        ) / 5
+    ) * 5
 
     low = min(trimmed)
 
@@ -88,6 +84,24 @@ def calculate_price(results):
 
     if len(trimmed) >= 6:
         confidence = "high"
+
+    print("")
+    print("===== PRICING DEBUG =====")
+
+    print(
+        f"RAW PRICES: {prices}"
+    )
+
+    print(
+        f"TRIMMED: {trimmed}"
+    )
+
+    print(
+        f"ESTIMATED: {estimated}"
+    )
+
+    print("=========================")
+    print("")
 
     return {
 
