@@ -130,7 +130,7 @@ class DBAScraper:
                 continue
 
             price_match = re.search(
-                r"(\\d[\\d\\.]*)\\s*kr",
+                r"(\d[\d\.]*)\s*kr",
                 text,
                 re.I
             )
