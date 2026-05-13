@@ -1,54 +1,101 @@
+# pricing_engine.py
+
+BAD_WORDS = [
+
+    "campingvogn",
+    "autocamper",
+    "trailer",
+    "leasing",
+    "udlejning",
+    "mpk",
+    "husvogn",
+    "bus",
+    "varevogn",
+    "bil",
+]
+
+
 def calculate_price(results):
-
-    if not results:
-
-        return {
-            "estimated": None,
-            "low": None,
-            "high": None,
-            "confidence": "low",
-        }
 
     prices = []
 
     for item in results:
 
+        title = (
+            item.get("title", "")
+            .lower()
+        )
+
+        # filtrer irrelevante annoncer væk
+        skip = False
+
+        for bad in BAD_WORDS:
+
+            if bad in title:
+                skip = True
+                break
+
+        if skip:
+            continue
+
         price = item.get("price")
 
-        if isinstance(price, int):
-            prices.append(price)
+        if not isinstance(price, int):
+            continue
 
-    if not prices:
+        # basic sanity checks
+        if price < 50:
+            continue
+
+        if price > 20000:
+            continue
+
+        prices.append(price)
+
+    # ingen brugbare priser
+    if len(prices) < 3:
 
         return {
             "estimated": None,
             "low": None,
             "high": None,
-            "confidence": "low",
+            "confidence": "low"
         }
 
     prices.sort()
 
-    # trim outliers
-    if len(prices) >= 6:
-        prices = prices[1:-1]
+    # fjern 2 laveste + 2 højeste
+    trimmed = prices
 
-    avg = int(
-        sum(prices) / len(prices)
+    if len(prices) >= 6:
+
+        trimmed = prices[2:-2]
+
+    # fallback hvis trimmed bliver tom
+    if not trimmed:
+
+        trimmed = prices
+
+    estimated = int(
+        sum(trimmed) / len(trimmed)
     )
 
-    low = min(prices)
+    low = min(trimmed)
 
-    high = max(prices)
+    high = max(trimmed)
 
     confidence = "medium"
 
-    if len(prices) >= 8:
+    if len(trimmed) >= 6:
         confidence = "high"
 
     return {
-        "estimated": avg,
+
+        "estimated": estimated,
+
         "low": low,
+
         "high": high,
-        "confidence": confidence,
+
+        "confidence": confidence
     }
