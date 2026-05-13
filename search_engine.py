@@ -65,7 +65,7 @@ def deduplicate_results(results):
             ).ratio()
 
             if (
-                sim > 0.88
+                sim > 0.90
                 and existing.get("price") == price
             ):
                 duplicate = True
@@ -88,7 +88,6 @@ class DBAScraper:
 
         print("\n===================")
         print("DBA QUERY:", query)
-        print("DBA URL:", url)
 
         async with httpx.AsyncClient(
             timeout=30,
@@ -99,9 +98,6 @@ class DBAScraper:
                 url,
                 headers=HEADERS,
             )
-
-        print("DBA STATUS:", response.status_code)
-        print("DBA HTML:", response.text[:1000])
 
         soup = BeautifulSoup(
             response.text,
@@ -116,8 +112,6 @@ class DBAScraper:
                 "div"
             ]
         )
-
-        print("DBA CARDS FOUND:", len(cards))
 
         for card in cards:
 
@@ -145,27 +139,27 @@ class DBAScraper:
             if not price:
                 continue
 
-            if price < 25:
+            if price < 50:
                 continue
 
-            title = text[:250]
+            if price > 100000:
+                continue
 
-            image = None
+            title = text[:140]
 
-            img = card.find("img")
+            words = title.split()
 
-            if img:
+            clean_title = " ".join(
+                words[:18]
+            )
 
-                image = (
-                    img.get("src")
-                    or img.get("data-src")
-                )
+            if len(clean_title) < 4:
+                continue
 
             results.append({
                 "source": "DBA",
-                "title": title,
+                "title": clean_title,
                 "price": price,
-                "image": image,
                 "url": url,
             })
 
@@ -183,9 +177,6 @@ class LauritzScraper:
             f"auctions/search/{query}"
         )
 
-        print("\n===================")
-        print("LAURITZ QUERY:", query)
-
         async with httpx.AsyncClient(
             timeout=30,
             follow_redirects=True,
@@ -196,11 +187,6 @@ class LauritzScraper:
                 headers=HEADERS,
             )
 
-        print(
-            "LAURITZ STATUS:",
-            response.status_code
-        )
-
         html = response.text
 
         match = re.search(
@@ -210,11 +196,6 @@ class LauritzScraper:
         )
 
         if not match:
-
-            print(
-                "LAURITZ: NO JSON FOUND"
-            )
-
             return []
 
         data = json.loads(
@@ -245,11 +226,6 @@ class LauritzScraper:
                     walk(item)
 
         walk(data)
-
-        print(
-            "LAURITZ ITEMS FOUND:",
-            len(found)
-        )
 
         results = []
 
@@ -285,30 +261,11 @@ class LauritzScraper:
             if not price:
                 continue
 
-            image = item.get(
-                "defaultImageUrl"
-            )
-
-            if (
-                image
-                and not image.startswith("http")
-            ):
-                image = (
-                    "https://images.lauritz.com/"
-                    + image
-                )
-
             results.append({
                 "source": "Lauritz",
-                "title": title,
+                "title": title[:140],
                 "price": price,
-                "image": image,
                 "url": url,
             })
 
-        print(
-            "LAURITZ RESULTS:",
-            len(results)
-        )
-
-        return results[:40]
+        return results[:20]

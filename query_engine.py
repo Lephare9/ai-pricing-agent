@@ -1,60 +1,119 @@
-# query_engine.py
-
 import re
+
 from difflib import SequenceMatcher
 
+
 GOOD_TRANSLATIONS = {
+
     "chair": "stol",
     "armchair": "lænestol",
+    "table": "bord",
     "lamp": "lampe",
     "light fixture": "lampe",
-    "table": "bord",
-    "dining table": "spisebord",
-    "bar stool": "barstol",
-    "candle holder": "lysestage",
-    "barrel": "vintønde",
-    "cabinet": "skab",
-    "bookshelf": "reol",
     "sofa": "sofa",
+    "wood": "træ",
+    "metal": "metal",
+    "iron": "metal",
+    "steel": "metal",
+    "leather": "læder",
+    "teak": "teak",
+    "oak": "eg",
+    "rattan": "flet",
+    "wicker": "kurv",
+    "barrel": "vintønde",
+    "keg": "vintønde",
 }
 
+
 BAD_LABELS = [
-    "wood",
-    "hardwood",
-    "plywood",
-    "flooring",
-    "floor",
-    "room",
-    "brown",
+
     "technology",
-    "still life photography",
-    "daylight",
-    "daylighting",
+    "electronic device",
+    "gadget",
+    "communication device",
+    "mobile phone",
+    "smartphone",
+    "graphics",
+    "font",
+    "text",
+    "room",
+    "design",
+    "creative arts",
+    "symmetry",
+    "pattern",
+    "triangle",
     "wood stain",
     "varnish",
-    "building material",
+    "hardwood",
+    "plywood",
+    "brown",
+    "black",
+    "grey",
+    "silver",
 ]
 
+
 IMPORTANT_WORDS = [
+
     "wegner",
     "mogensen",
     "ph",
     "poulsen",
-    "vintage",
-    "retro",
     "teak",
-    "eg",
     "læder",
+    "flet",
+    "metal",
+    "skal",
+    "retro",
+    "vintage",
+]
+
+
+BAD_QUERY_WORDS = [
+
+    "sort",
+    "sorte",
+    "hvid",
+    "brun",
+    "grå",
+    "grey",
+    "silver",
+    "black",
+    "brown",
+    "modern",
+    "moderne",
 ]
 
 
 def normalize_query(q):
+
     q = q.lower().strip()
-    q = re.sub(r"\s+", " ", q)
+
+    q = re.sub(
+        r"\s+",
+        " ",
+        q
+    )
+
     return q
 
 
+def simplify_query(query):
+
+    words = query.lower().split()
+
+    cleaned = []
+
+    for word in words:
+
+        if word not in BAD_QUERY_WORDS:
+            cleaned.append(word)
+
+    return " ".join(cleaned)
+
+
 def similarity(a, b):
+
     return SequenceMatcher(
         None,
         a,
@@ -63,13 +122,17 @@ def similarity(a, b):
 
 
 def deduplicate_queries(queries):
+
     unique = []
 
     for q in queries:
+
         q = normalize_query(q)
+
         duplicate = False
 
         for existing in unique:
+
             if similarity(q, existing) > 0.82:
                 duplicate = True
                 break
@@ -81,10 +144,13 @@ def deduplicate_queries(queries):
 
 
 def score_query(query):
+
     score = 0
+
     words = query.split()
 
     for word in words:
+
         if word in IMPORTANT_WORDS:
             score += 2
         else:
@@ -93,11 +159,19 @@ def score_query(query):
     return score
 
 
-def build_queries(gemini_data, vision_labels):
+def build_queries(
+    gemini_data,
+    vision_labels,
+    web_entities,
+):
+
     queries = []
 
     if gemini_data:
-        primary = gemini_data.get("primary_query")
+
+        primary = gemini_data.get(
+            "primary_query"
+        )
 
         if primary:
             queries.append(primary)
@@ -109,19 +183,40 @@ def build_queries(gemini_data, vision_labels):
 
         queries.extend(secondary)
 
-    else:
-        for label in vision_labels:
-            label = label.lower()
+    for entity in web_entities:
 
-            if label in BAD_LABELS:
-                continue
+        entity = entity.lower()
 
-            translated = GOOD_TRANSLATIONS.get(label)
+        if len(entity) < 3:
+            continue
 
-            if translated:
-                queries.append(translated)
+        queries.append(entity)
 
-    queries = deduplicate_queries(queries)
+    for label in vision_labels:
+
+        label = label.lower()
+
+        if label in BAD_LABELS:
+            continue
+
+        translated = GOOD_TRANSLATIONS.get(label)
+
+        if translated:
+            queries.append(translated)
+
+    queries = [
+        simplify_query(q)
+        for q in queries
+    ]
+
+    queries = [
+        q for q in queries
+        if q.strip()
+    ]
+
+    queries = deduplicate_queries(
+        queries
+    )
 
     queries = sorted(
         queries,
@@ -129,5 +224,4 @@ def build_queries(gemini_data, vision_labels):
         reverse=True
     )
 
-    return queries[:2]
-
+    return queries[:4]

@@ -79,9 +79,6 @@ async def analyze_with_vision(image_url):
                         "type": "WEB_DETECTION",
                         "maxResults": 10,
                     },
-                    {
-                        "type": "TEXT_DETECTION"
-                    },
                 ],
             }
         ]
@@ -106,7 +103,37 @@ async def analyze_with_vision(image_url):
     ):
         labels.append(label["description"])
 
-    return labels
+    web_entities = []
+
+    web_detection = result.get(
+        "webDetection",
+        {}
+    )
+
+    for entity in web_detection.get(
+        "webEntities",
+        []
+    ):
+
+        description = entity.get(
+            "description"
+        )
+
+        score = entity.get(
+            "score",
+            0
+        )
+
+        if (
+            description
+            and score > 0.5
+        ):
+            web_entities.append(description)
+
+    return {
+        "labels": labels,
+        "web_entities": web_entities,
+    }
 
 
 def analyze_with_gemini(image_url):
@@ -123,6 +150,8 @@ Du analyserer billeder til en dansk AI-prisagent.
 90% er IKKE designerobjekter.
 
 Du må IKKE gætte designere.
+
+Hold queries korte og søgbare til DBA.
 
 Svar KUN som JSON.
 
@@ -186,20 +215,30 @@ async def root():
 @app.post("/analyze")
 async def analyze(data: AnalyzeRequest):
 
-    vision_labels = await analyze_with_vision(
+    vision_data = await analyze_with_vision(
         data.image_url
     )
+
+    vision_labels = vision_data[
+        "labels"
+    ]
+
+    web_entities = vision_data[
+        "web_entities"
+    ]
 
     gemini_data = analyze_with_gemini(
         data.image_url
     )
 
     print("VISION:", vision_labels)
+    print("WEB ENTITIES:", web_entities)
     print("GEMINI:", gemini_data)
 
     queries = build_queries(
         gemini_data,
         vision_labels,
+        web_entities,
     )
 
     print("QUERIES:", queries)
@@ -209,7 +248,6 @@ async def analyze(data: AnalyzeRequest):
         return {
             "success": False,
             "error": "Ingen relevante søgninger fundet",
-            "vision_labels": vision_labels,
         }
 
     dba = DBAScraper()
@@ -247,12 +285,6 @@ async def analyze(data: AnalyzeRequest):
 
             lauritz_results = await lauritz.search(query)
 
-            print(
-                "Lauritz",
-                query,
-                len(lauritz_results)
-            )
-
             all_results.extend(lauritz_results)
 
     all_results = deduplicate_results(
@@ -269,17 +301,24 @@ async def analyze(data: AnalyzeRequest):
 
     confidence = calculate_confidence(prices)
 
+    clean_results = []
+
+    for item in all_results[:12]:
+
+        clean_results.append({
+            "source": item.get("source"),
+            "title": item.get("title"),
+            "price": item.get("price"),
+            "url": item.get("url"),
+        })
+
     return {
         "success": True,
 
         "title": (
             gemini_data.get("title")
             if gemini_data
-            else (
-                queries[0]
-                if queries
-                else "Ukendt objekt"
-            )
+            else queries[0]
         ),
 
         "category": (
@@ -318,5 +357,5 @@ async def analyze(data: AnalyzeRequest):
 
         "queries": queries,
 
-        "results": all_results[:12],
+        "results": clean_results,
     }
