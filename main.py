@@ -196,9 +196,12 @@ async def analyze(request: AnalyzeRequest):
 
         if estimated_price:
 
-            rounded_price = round(
-                estimated_price / 5
-            ) * 5
+            rounded_price = None
+
+    if estimated_price:
+    rounded_price = round(
+        estimated_price / 5
+    ) * 5
 
         else:
 
