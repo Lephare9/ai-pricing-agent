@@ -12,13 +12,9 @@ from query_engine import build_queries
 from pricing_engine import calculate_price
 from search_engine import search_dba
 
-
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY"
-)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
-
     genai.configure(
         api_key=GEMINI_API_KEY
     )
@@ -33,13 +29,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 class AnalyzeRequest(BaseModel):
-
     image_url: str
 
-
-async def analyze_with_gemini(image_url):
+async def analyze_with_gemini(image_bytes):
 
     if not GEMINI_API_KEY:
         return None
@@ -91,15 +84,6 @@ Avoid overly generic queries like:
 Avoid overly detailed descriptions.
 """
 
-        async with httpx.AsyncClient() as client:
-
-            response = await client.get(
-                image_url,
-                timeout=30
-            )
-
-            image_bytes = response.content
-
         result = model.generate_content(
             [
                 prompt,
@@ -110,14 +94,20 @@ Avoid overly detailed descriptions.
             ]
         )
 
-        text = (
-            result.text
-            .replace("```json", "")
-            .replace("```", "")
-            .strip()
-        )
+        text = result.text.strip()
 
-        data = json.loads(text)
+        if text.startswith("```json"):
+            text = text.replace(
+                "```json",
+                ""
+            )
+
+        if text.endswith("```"):
+            text = text[:-3]
+
+        data = json.loads(
+            text.strip()
+        )
 
         print(
             "GEMINI:",
@@ -135,7 +125,6 @@ Avoid overly detailed descriptions.
 
         return None
 
-
 @app.get("/")
 async def root():
 
@@ -143,91 +132,112 @@ async def root():
         "status": "running"
     }
 
-
 @app.post("/analyze")
 async def analyze(request: AnalyzeRequest):
 
-    gemini_data = await analyze_with_gemini(
-        request.image_url
-    )
+    try:
 
-    if not gemini_data:
+        image_url = request.image_url
 
-        return {
-            "success": False
-        }
+        if not image_url:
+            return {
+                "error": "No image_url"
+            }
 
-    queries = build_queries(
-        gemini_data
-    )
+        async with httpx.AsyncClient() as client:
 
-    print(
-        "QUERIES:",
-        queries
-    )
-
-    results = []
-
-    for query in queries:
-
-        search_results = await search_dba(
-            query
-        )
-
-        if search_results:
-
-            results = search_results
-
-            print(
-                f"GOOD MATCHES USING: {query}"
+            response = await client.get(
+                image_url,
+                timeout=30
             )
 
-            break
+            image_bytes = response.content
 
-    if not results:
+        gemini_data = await analyze_with_gemini(
+            image_bytes
+        )
 
-        rounded_price = None
+        if not gemini_data:
+            return {
+                "error": "Gemini failed"
+            }
 
-    else:
+        queries = build_queries(
+            gemini_data
+        )
+
+        print(
+            "QUERIES:",
+            queries
+        )
+
+        results = []
+
+        for query in queries:
+
+            print("=" * 20)
+            print(
+                "DBA QUERY:",
+                query
+            )
+
+            dba_results = await search_dba(
+                query
+            )
+
+            if dba_results:
+
+                results = dba_results
+
+                print(
+                    "GOOD MATCHES USING:",
+                    query
+                )
+
+                break
 
         estimated_price = calculate_price(
             results
         )
 
+        rounded_price = None
+
         if estimated_price:
+            rounded_price = round(
+                estimated_price / 5
+            ) * 5
 
-            rounded_price = None
+        return {
+            "title": gemini_data.get(
+                "title"
+            ),
+            "category": gemini_data.get(
+                "category"
+            ),
+            "materials": gemini_data.get(
+                "materials"
+            ),
+            "condition": gemini_data.get(
+                "condition"
+            ),
+            "designer": gemini_data.get(
+                "designer"
+            ),
+            "brand": gemini_data.get(
+                "brand"
+            ),
+            "estimated_price": rounded_price,
+            "query_used": queries[0]
+            if queries else None
+        }
 
-    if estimated_price:
-    rounded_price = round(
-        estimated_price / 5
-    ) * 5
+    except Exception as e:
 
-        else:
+        print(
+            "ERROR:",
+            str(e)
+        )
 
-            rounded_price = None
-
-    return {
-        "success": True,
-        "title": gemini_data.get(
-            "title"
-        ),
-        "category": gemini_data.get(
-            "category"
-        ),
-        "materials": gemini_data.get(
-            "materials"
-        ),
-        "condition": gemini_data.get(
-            "condition"
-        ),
-        "designer": gemini_data.get(
-            "designer"
-        ),
-        "brand": gemini_data.get(
-            "brand"
-        ),
-        "price": rounded_price,
-        "query_used": queries[0]
-        if queries else None
-    }
+        return {
+            "error": str(e)
+        }
