@@ -196,7 +196,12 @@ async def analyze(request: AnalyzeRequest):
 
                 break
 
-        estimated_price = calculate_price(
+        pricing_data = calculate_price(
+    results
+)
+
+estimated_price = pricing_data.get(
+    "estimated_price")
             results
         )
 
