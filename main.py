@@ -184,26 +184,26 @@ async def analyze(request: AnalyzeRequest):
 
             break
 
-  if not results:
+    if not results:
 
-    rounded_price = None
-
-else:
-
-    estimated_price = calculate_price(
-        results
-    )
-
-    if estimated_price:
-
-        rounded_price = round(
-            estimated_price / 5
-        ) * 5
+        rounded_price = None
 
     else:
 
-        rounded_price = None
-esti
+        estimated_price = calculate_price(
+            results
+        )
+
+        if estimated_price:
+
+            rounded_price = round(
+                estimated_price / 5
+            ) * 5
+
+        else:
+
+            rounded_price = None
+
     return {
         "success": True,
         "title": gemini_data.get(
