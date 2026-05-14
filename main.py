@@ -17,16 +17,13 @@ GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY"
 )
 
-
 if GEMINI_API_KEY:
 
     genai.configure(
         api_key=GEMINI_API_KEY
     )
 
-
 app = FastAPI()
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +39,7 @@ class AnalyzeRequest(BaseModel):
     image_url: str
 
 
-async def analyze_with_gemini(image_bytes):
+async def analyze_with_gemini(image_url):
 
     if not GEMINI_API_KEY:
         return None
@@ -54,32 +51,54 @@ async def analyze_with_gemini(image_bytes):
         )
 
         prompt = """
-        Analyze this used item photo.
+Analyze this used item photo.
 
-        Return ONLY valid JSON.
+Return ONLY valid JSON.
 
-        {
-          "title": "...",
-          "category": "...",
-          "materials": "...",
-          "condition": "...",
-          "designer": null,
-          "brand": null,
-          "designer_confidence": "low",
-          "primary_query": "...",
-          "secondary_queries": [
-            "..."
-          ]
-        }
+{
+    "title": "...",
+    "category": "...",
+    "materials": "...",
+    "condition": "...",
+    "designer": null,
+    "brand": null,
+    "designer_confidence": "low",
+    "primary_query": "...",
+    "secondary_queries": [
+        "...",
+        "..."
+    ]
+}
 
-        IMPORTANT:
-        - Focus on Danish DBA marketplace wording
-        - Use SHORT search queries
-        - Prefer ONE strong DBA query
-        - Avoid long descriptions
-        - Avoid unnecessary colors
-        - Avoid generic filler words
-        """
+Focus on Danish used marketplace search terms.
+
+Keep titles realistic and short.
+
+IMPORTANT:
+Queries should match how normal people search on DBA.
+
+Prefer:
+- tripod gulvlampe
+- teak kommode
+- marokkansk læderpuf
+- læderjakke biker
+
+Avoid overly generic queries like:
+- lampe
+- stol
+- jakke
+
+Avoid overly detailed descriptions.
+"""
+
+        async with httpx.AsyncClient() as client:
+
+            response = await client.get(
+                image_url,
+                timeout=30
+            )
+
+            image_bytes = response.content
 
         result = model.generate_content(
             [
@@ -91,26 +110,27 @@ async def analyze_with_gemini(image_bytes):
             ]
         )
 
-        text = result.text.strip()
-
-        text = text.replace(
-            "```json",
-            ""
+        text = (
+            result.text
+            .replace("```json", "")
+            .replace("```", "")
+            .strip()
         )
 
-        text = text.replace(
-            "```",
-            ""
+        data = json.loads(text)
+
+        print(
+            "GEMINI:",
+            data
         )
 
-        parsed = json.loads(text)
-
-        return parsed
+        return data
 
     except Exception as e:
 
         print(
-            f"GEMINI ERROR: {e}"
+            "GEMINI ERROR:",
+            str(e)
         )
 
         return None
@@ -120,63 +140,21 @@ async def analyze_with_gemini(image_bytes):
 async def root():
 
     return {
-        "status": "ok"
+        "status": "running"
     }
 
 
 @app.post("/analyze")
-async def analyze(data: AnalyzeRequest):
-
-    try:
-
-        print("")
-        print("===================")
-        print("")
-
-        print(
-            f"IMAGE URL: {data.image_url}"
-        )
-
-        image_response = httpx.get(
-            data.image_url,
-            timeout=30
-        )
-
-        image_bytes = image_response.content
-
-        print(
-            f"IMAGE SIZE: {len(image_bytes)} bytes"
-        )
-
-    except Exception as e:
-
-        print(
-            f"IMAGE DOWNLOAD ERROR: {e}"
-        )
-
-        return {
-            "success": False,
-            "error": "Kunne ikke hente billede"
-        }
-
-    # VISION HELT FJERNET
-    print(
-        "VISION DISABLED"
-    )
+async def analyze(request: AnalyzeRequest):
 
     gemini_data = await analyze_with_gemini(
-        image_bytes
-    )
-
-    print(
-        f"GEMINI: {gemini_data}"
+        request.image_url
     )
 
     if not gemini_data:
 
         return {
-            "success": False,
-            "error": "Gemini analyse fejlede"
+            "success": False
         }
 
     queries = build_queries(
@@ -184,98 +162,57 @@ async def analyze(data: AnalyzeRequest):
     )
 
     print(
-        f"QUERIES: {queries}"
+        "QUERIES:",
+        queries
     )
 
-    all_results = []
+    results = []
 
     for query in queries:
 
-        print("")
-        print("===================")
-        print("")
-
-        print(
-            f"DBA QUERY: {query}"
-        )
-
-        dba_results = await search_dba(
+        search_results = await search_dba(
             query
         )
 
-        print(
-            f"DBA {query} {len(dba_results)}"
-        )
+        if search_results:
 
-        all_results.extend(
-            dba_results
-        )
+            results = search_results
 
-    # dedupe
-    deduped = []
+            print(
+                f"GOOD MATCHES USING: {query}"
+            )
 
-    seen = set()
+            break
 
-    for item in all_results:
-
-        key = (
-            item.get("title"),
-            item.get("price")
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        deduped.append(item)
-
-    all_results = deduped[:10]
-
-    pricing = calculate_price(
-        all_results
+    estimated_price = calculate_price(
+        results
     )
 
-    print(
-        f"FINAL PRICE: {pricing}"
-    )
+    rounded_price = round(
+        estimated_price / 5
+    ) * 5
 
     return {
-
         "success": True,
-
         "title": gemini_data.get(
-            "title",
-            "Ukendt produkt"
+            "title"
         ),
-
-        "estimated_price": pricing.get(
-            "estimated"
+        "category": gemini_data.get(
+            "category"
         ),
-
-        "price_low": pricing.get(
-            "low"
-        ),
-
-        "price_high": pricing.get(
-            "high"
-        ),
-
-        "confidence": pricing.get(
-            "confidence"
-        ),
-
-        "count": len(all_results),
-
-        "queries": queries,
-
         "materials": gemini_data.get(
             "materials"
         ),
-
         "condition": gemini_data.get(
             "condition"
         ),
-
-        "results": all_results
+        "designer": gemini_data.get(
+            "designer"
+        ),
+        "brand": gemini_data.get(
+            "brand"
+        ),
+        "price": rounded_price,
+        "query_used": queries[0]
+        if queries else None
     }
