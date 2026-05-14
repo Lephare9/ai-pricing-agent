@@ -12,12 +12,14 @@ from query_engine import build_queries
 from pricing_engine import calculate_price
 from search_engine import search_dba
 
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
     genai.configure(
         api_key=GEMINI_API_KEY
     )
+
 
 app = FastAPI()
 
@@ -29,8 +31,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class AnalyzeRequest(BaseModel):
     image_url: str
+
 
 async def analyze_with_gemini(image_bytes):
 
@@ -65,23 +69,9 @@ Return ONLY valid JSON.
 
 Focus on Danish used marketplace search terms.
 
-Keep titles realistic and short.
+Queries should match how people search on DBA.
 
-IMPORTANT:
-Queries should match how normal people search on DBA.
-
-Prefer:
-- tripod gulvlampe
-- teak kommode
-- marokkansk læderpuf
-- læderjakke biker
-
-Avoid overly generic queries like:
-- lampe
-- stol
-- jakke
-
-Avoid overly detailed descriptions.
+Avoid overly generic queries.
 """
 
         result = model.generate_content(
@@ -125,12 +115,14 @@ Avoid overly detailed descriptions.
 
         return None
 
+
 @app.get("/")
 async def root():
 
     return {
         "status": "running"
     }
+
 
 @app.post("/analyze")
 async def analyze(request: AnalyzeRequest):
@@ -140,8 +132,9 @@ async def analyze(request: AnalyzeRequest):
         image_url = request.image_url
 
         if not image_url:
+
             return {
-                "error": "No image_url"
+                "error": "Missing image_url"
             }
 
         async with httpx.AsyncClient() as client:
@@ -158,6 +151,7 @@ async def analyze(request: AnalyzeRequest):
         )
 
         if not gemini_data:
+
             return {
                 "error": "Gemini failed"
             }
@@ -175,7 +169,7 @@ async def analyze(request: AnalyzeRequest):
 
         for query in queries:
 
-            print("=" * 20)
+            print("===================")
             print(
                 "DBA QUERY:",
                 query
@@ -197,41 +191,63 @@ async def analyze(request: AnalyzeRequest):
                 break
 
         pricing_data = calculate_price(
-    results
-)
-
-estimated_price = pricing_data.get(
-    "estimated_price")
             results
         )
+
+        estimated_price = None
+
+        if isinstance(
+            pricing_data,
+            dict
+        ):
+
+            estimated_price = pricing_data.get(
+                "estimated_price"
+            )
+
+        elif isinstance(
+            pricing_data,
+            (int, float)
+        ):
+
+            estimated_price = pricing_data
 
         rounded_price = None
 
         if estimated_price:
+
             rounded_price = round(
                 estimated_price / 5
             ) * 5
 
         return {
+
             "title": gemini_data.get(
                 "title"
             ),
+
             "category": gemini_data.get(
                 "category"
             ),
+
             "materials": gemini_data.get(
                 "materials"
             ),
+
             "condition": gemini_data.get(
                 "condition"
             ),
+
             "designer": gemini_data.get(
                 "designer"
             ),
+
             "brand": gemini_data.get(
                 "brand"
             ),
+
             "estimated_price": rounded_price,
+
             "query_used": queries[0]
             if queries else None
         }
