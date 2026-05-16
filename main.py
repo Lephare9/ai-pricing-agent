@@ -205,7 +205,7 @@ async def analyze(request: AnalyzeRequest):
         ):
 
             estimated_price = pricing_data.get(
-                "estimated_price"
+                "estimated"
             )
 
         elif isinstance(
