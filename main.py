@@ -67,11 +67,9 @@ Return ONLY valid JSON.
     ]
 }
 
-Focus on Danish used marketplace search terms.
+Focus on Danish marketplace search queries.
 
-Queries should match how people search on DBA.
-
-Avoid overly generic queries.
+Avoid generic queries.
 """
 
         result = model.generate_content(
@@ -194,6 +192,11 @@ async def analyze(request: AnalyzeRequest):
             results
         )
 
+        print(
+            "PRICING DATA:",
+            pricing_data
+        )
+
         estimated_price = None
 
         if isinstance(
@@ -214,13 +217,13 @@ async def analyze(request: AnalyzeRequest):
 
         rounded_price = None
 
-        if estimated_price:
+        if estimated_price is not None:
 
             rounded_price = round(
                 estimated_price / 5
             ) * 5
 
-        return {
+        response_data = {
 
             "title": gemini_data.get(
                 "title"
@@ -251,6 +254,13 @@ async def analyze(request: AnalyzeRequest):
             "query_used": queries[0]
             if queries else None
         }
+
+        print(
+            "FINAL RESPONSE:",
+            response_data
+        )
+
+        return response_data
 
     except Exception as e:
 
