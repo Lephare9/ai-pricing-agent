@@ -1,4 +1,3 @@
-python
 import os
 import json
 import httpx
@@ -22,7 +21,6 @@ if GEMINI_API_KEY:
     )
 
 
-# SHARED PASSWORDS
 VALID_PASSWORDS = {
     "shop456": "shop"
 }
@@ -75,9 +73,9 @@ Return ONLY valid JSON.
     ]
 }
 
-Focus on Danish marketplace search queries.
+Focus on Danish used marketplace search terms.
 
-Avoid generic queries.
+Avoid overly generic queries.
 """
 
         result = model.generate_content(
