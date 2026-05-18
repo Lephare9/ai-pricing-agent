@@ -1,3 +1,4 @@
+````python
 import os
 import json
 import httpx
@@ -21,6 +22,12 @@ if GEMINI_API_KEY:
     )
 
 
+# SHARED PASSWORDS
+VALID_PASSWORDS = {
+    "shop456": "shop"
+}
+
+
 app = FastAPI()
 
 app.add_middleware(
@@ -34,6 +41,7 @@ app.add_middleware(
 
 class AnalyzeRequest(BaseModel):
     image_url: str
+    password: str
 
 
 async def analyze_with_gemini(image_bytes):
@@ -126,6 +134,16 @@ async def root():
 async def analyze(request: AnalyzeRequest):
 
     try:
+
+        role = VALID_PASSWORDS.get(
+            request.password
+        )
+
+        if not role:
+
+            return {
+                "error": "Unauthorized"
+            }
 
         image_url = request.image_url
 
@@ -252,7 +270,9 @@ async def analyze(request: AnalyzeRequest):
             "estimated_price": rounded_price,
 
             "query_used": queries[0]
-            if queries else None
+            if queries else None,
+
+            "role": role
         }
 
         print(
