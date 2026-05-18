@@ -1,54 +1,197 @@
-BAD_WORDS = [
+import re
+import statistics
 
-    "campingvogn",
-    "autocamper",
-    "trailer",
-    "leasing",
-    "udlejning",
-    "mpk",
-    "husvogn",
-    "bus",
-    "varevogn",
-    "bil",
-]
+
+def extract_price(text):
+
+    if not text:
+        return None
+
+    text = str(text).lower()
+
+    text = text.replace(".", "")
+    text = text.replace(",", "")
+
+    matches = re.findall(
+        r'(\d{2,6})\s*kr',
+        text
+    )
+
+    if not matches:
+
+        matches = re.findall(
+            r'\b(\d{2,6})\b',
+            text
+        )
+
+    for match in matches:
+
+        try:
+
+            price = int(match)
+
+            if 25 <= price <= 200000:
+                return price
+
+        except:
+            pass
+
+    return None
 
 
 def calculate_price(results):
 
-    prices = []
+    try:
 
-    for item in results:
+        prices = []
 
-        title = (
-            item.get("title", "")
-            .lower()
+        for item in results:
+
+            price = None
+
+            if isinstance(item, dict):
+
+                price = extract_price(
+                    item.get("price")
+                )
+
+                if not price:
+
+                    price = extract_price(
+                        item.get("title")
+                    )
+
+            else:
+
+                price = extract_price(
+                    str(item)
+                )
+
+            if price:
+                prices.append(price)
+
+        prices = sorted(prices)
+
+        print("===== PRICING DEBUG =====")
+        print("RAW PRICES:", prices)
+
+        if not prices:
+
+            print("NO PRICES FOUND")
+            print("=========================")
+
+            return {
+                "estimated": None,
+                "low": None,
+                "high": None,
+                "confidence": "low"
+            }
+
+        # FEW RESULTS:
+        # be permissive
+
+        if len(prices) <= 6:
+
+            estimated = round(
+                sum(prices) / len(prices)
+            )
+
+            print(
+                "FEW RESULTS MODE"
+            )
+
+            print(
+                "ESTIMATED:",
+                estimated
+            )
+
+            print("=========================")
+
+            return {
+                "estimated": estimated,
+                "low": min(prices),
+                "high": max(prices),
+                "confidence": "low"
+            }
+
+        # MANY RESULTS:
+        # trim extremes
+
+        q1 = statistics.quantiles(
+            prices,
+            n=4
+        )[0]
+
+        q3 = statistics.quantiles(
+            prices,
+            n=4
+        )[2]
+
+        iqr = q3 - q1
+
+        lower_bound = q1 - (
+            1.5 * iqr
         )
 
-        skip = False
+        upper_bound = q3 + (
+            1.5 * iqr
+        )
 
-        for bad in BAD_WORDS:
+        trimmed = [
 
-            if bad in title:
-                skip = True
-                break
+            p for p in prices
 
-        if skip:
-            continue
+            if (
+                p >= lower_bound
+                and
+                p <= upper_bound
+            )
+        ]
 
-        price = item.get("price")
+        print(
+            "TRIMMED:",
+            trimmed
+        )
 
-        if not isinstance(price, int):
-            continue
+        if not trimmed:
 
-        if price < 50:
-            continue
+            trimmed = prices
 
-        if price > 20000:
-            continue
+        estimated = round(
+            statistics.median(
+                trimmed
+            )
+        )
 
-        prices.append(price)
+        print(
+            "ESTIMATED:",
+            estimated
+        )
 
-    if len(prices) < 3:
+        print("=========================")
+
+        confidence = "medium"
+
+        if len(trimmed) >= 10:
+            confidence = "high"
+
+        return {
+
+            "estimated": estimated,
+
+            "low": min(trimmed),
+
+            "high": max(trimmed),
+
+            "confidence": confidence
+        }
+
+    except Exception as e:
+
+        print(
+            "PRICING ERROR:",
+            str(e)
+        )
 
         return {
             "estimated": None,
@@ -56,60 +199,3 @@ def calculate_price(results):
             "high": None,
             "confidence": "low"
         }
-
-    prices.sort()
-
-    trimmed = prices
-
-    # fjern 2 laveste + 2 højeste
-    if len(prices) >= 6:
-
-        trimmed = prices[2:-2]
-
-    if not trimmed:
-
-        trimmed = prices
-
-    estimated = round(
-        (
-            sum(trimmed) / len(trimmed)
-        ) / 5
-    ) * 5
-
-    low = min(trimmed)
-
-    high = max(trimmed)
-
-    confidence = "medium"
-
-    if len(trimmed) >= 6:
-        confidence = "high"
-
-    print("")
-    print("===== PRICING DEBUG =====")
-
-    print(
-        f"RAW PRICES: {prices}"
-    )
-
-    print(
-        f"TRIMMED: {trimmed}"
-    )
-
-    print(
-        f"ESTIMATED: {estimated}"
-    )
-
-    print("=========================")
-    print("")
-
-    return {
-
-        "estimated": estimated,
-
-        "low": low,
-
-        "high": high,
-
-        "confidence": confidence
-    }
