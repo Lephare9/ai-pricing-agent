@@ -9,7 +9,6 @@ NEGATIVE_WORDS = [
     "collector",
     "samler",
     "limited",
-    "vintage fund",
     "museum",
     "investering",
     "ældgammel"
@@ -66,10 +65,12 @@ def normalize_word(word):
 
         "lamper": "lampe",
         "pendellampe": "lampe",
+        "bordlampe": "lampe",
         "gulvlampe": "lampe",
 
         "stole": "stol",
-        "barstol": "stol"
+        "barstol": "stol",
+        "lænestole": "lænestol"
     }
 
     return replacements.get(
@@ -78,28 +79,60 @@ def normalize_word(word):
     )
 
 
+def tokenize(text):
+
+    if not text:
+        return []
+
+    words = re.findall(
+        r'\w+',
+        text.lower()
+    )
+
+    normalized = [
+
+        normalize_word(w)
+
+        for w in words
+
+        if len(w) > 2
+    ]
+
+    return normalized
+
+
 def score_result(query, title):
 
     if not title:
         return 0
 
-    query_words = [
+    query_words = tokenize(query)
 
-        normalize_word(w)
-
-        for w in query.lower().split()
-
-        if len(w) > 2
-    ]
-
-    title_lower = title.lower()
+    title_words = tokenize(title)
 
     score = 0
 
+    # exact token matches
+
     for word in query_words:
 
-        if word in title_lower:
-            score += 2
+        if word in title_words:
+            score += 3
+
+    # bonus for multiple matches
+
+    overlap = len(
+
+        set(query_words)
+        &
+        set(title_words)
+    )
+
+    score += overlap
+
+    # penalize suspicious words
+
+    title_lower = title.lower()
 
     for negative in NEGATIVE_WORDS:
 
@@ -142,7 +175,24 @@ def calculate_price(results, query=""):
             reverse=True
         )
 
-        top_results = scored_results[:8]
+        # keep only relevant hits
+
+        top_results = [
+
+            r for r in scored_results
+
+            if r["score"] >= 2
+        ]
+
+        # fallback
+
+        if not top_results:
+
+            top_results = scored_results[:5]
+
+        # limit amount
+
+        top_results = top_results[:6]
 
         print("===== RELEVANCE DEBUG =====")
 
