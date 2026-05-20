@@ -6,7 +6,6 @@ import google.generativeai as genai
 import requests
 import os
 import json
-import statistics
 import re
 
 from pricing_engine import calculate_price
@@ -46,7 +45,11 @@ NEGATIVE_CONTEXT = [
     "mælketænder",
     "investering",
     "guldbarre",
-    "sølvmønt"
+    "sølvmønt",
+    "samling",
+    "bestik",
+    "pokal",
+    "medalje"
 ]
 
 
@@ -113,9 +116,14 @@ def search_dba(query):
             re.IGNORECASE
         )
 
+        raw_count = len(matches)
+
         results = []
 
-        for match in matches[:60]:
+        # HARD LIMIT
+        # DBA relevance drops fast
+
+        for match in matches[:20]:
 
             text = match.strip()
 
@@ -138,12 +146,16 @@ def search_dba(query):
             except:
                 continue
 
+            # remove unrealistic prices
+
             if (
                 price_int < 25
                 or
-                price_int > 50000
+                price_int > 25000
             ):
                 continue
+
+            # remove bad semantic matches
 
             if not is_relevant_result(text):
                 continue
@@ -154,6 +166,17 @@ def search_dba(query):
 
                 "price": price_int
             })
+
+            # EARLY STOP
+            # we only need few good hits
+
+            if len(results) >= 8:
+                break
+
+        print(
+            "DBA RESULTS:",
+            raw_count
+        )
 
         print(
             "DBA CLEAN RESULTS:",
