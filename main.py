@@ -62,9 +62,7 @@ GENERIC_WORDS = [
     "unik",
     "messing",
     "metal",
-    "træ",
-    "kunst",
-    "figur"
+    "kunst"
 ]
 
 
@@ -141,9 +139,12 @@ def search_dba(query):
 
         html = response.text
 
+        # IMPORTANT:
+        # full text match including price + title
+
         matches = re.findall(
 
-            r'(\d[\d\.]*)\s*kr\..{0,220}',
+            r'.{0,120}\d[\d\.]*\s*kr\..{0,180}',
 
             html,
 
@@ -154,7 +155,7 @@ def search_dba(query):
 
         results = []
 
-        # only inspect first relevant block
+        # only inspect top search results
 
         for match in matches[:20]:
 
@@ -179,7 +180,7 @@ def search_dba(query):
             except:
                 continue
 
-            # unrealistic
+            # remove unrealistic prices
 
             if (
                 price_int < 25
@@ -188,7 +189,7 @@ def search_dba(query):
             ):
                 continue
 
-            # semantic blacklist
+            # remove blacklisted contexts
 
             if not is_relevant_result(text):
                 continue
@@ -200,7 +201,7 @@ def search_dba(query):
                 "price": price_int
             })
 
-            # early stop
+            # early stop after enough matches
 
             if len(results) >= 8:
                 break
@@ -214,6 +215,18 @@ def search_dba(query):
             "DBA CLEAN RESULTS:",
             len(results)
         )
+
+        # relevance preview
+
+        print("===== RELEVANCE DEBUG =====")
+
+        for r in results[:5]:
+
+            print(
+                f"{r['price']} kr. {r['title'][:140]}"
+            )
+
+        print("===========================")
 
         return results
 
@@ -276,7 +289,7 @@ Always include:
 - object type
 or brand/designer if known.
 
-Avoid broad collectible-related wording.
+Avoid collectible/investment wording.
 
 Good examples:
 - kartell cindy lampe
@@ -284,13 +297,13 @@ Good examples:
 - beige drejelænestol
 - trææske mønster
 - vindmølle figur
+- messing knoplod
 
 Bad examples:
 - lampe
 - stol
 - trææske
 - moderne designer lampe
-- transparent plast lampe
 
 """
 
@@ -376,8 +389,7 @@ async def analyze(request: Request):
 
             results = search_dba(query)
 
-            # fallback:
-            # broaden search automatically
+            # fallback search
 
             if not results:
 
