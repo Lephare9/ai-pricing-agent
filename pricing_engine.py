@@ -2,6 +2,20 @@ import re
 import statistics
 
 
+NEGATIVE_WORDS = [
+
+    "sjælden",
+    "unik",
+    "collector",
+    "samler",
+    "limited",
+    "vintage fund",
+    "museum",
+    "investering",
+    "ældgammel"
+]
+
+
 def extract_price(text):
 
     if not text:
@@ -39,13 +53,117 @@ def extract_price(text):
     return None
 
 
-def calculate_price(results):
+def normalize_word(word):
+
+    word = word.lower().strip()
+
+    replacements = {
+
+        "jakker": "jakke",
+        "dunjakke": "jakke",
+        "pufferjakke": "jakke",
+        "vinterjakke": "jakke",
+
+        "lamper": "lampe",
+        "pendellampe": "lampe",
+        "gulvlampe": "lampe",
+
+        "stole": "stol",
+        "barstol": "stol"
+    }
+
+    return replacements.get(
+        word,
+        word
+    )
+
+
+def score_result(query, title):
+
+    if not title:
+        return 0
+
+    query_words = [
+
+        normalize_word(w)
+
+        for w in query.lower().split()
+
+        if len(w) > 2
+    ]
+
+    title_lower = title.lower()
+
+    score = 0
+
+    for word in query_words:
+
+        if word in title_lower:
+            score += 2
+
+    for negative in NEGATIVE_WORDS:
+
+        if negative in title_lower:
+            score -= 3
+
+    return score
+
+
+def calculate_price(results, query=""):
 
     try:
 
-        prices = []
+        scored_results = []
 
         for item in results:
+
+            title = ""
+
+            if isinstance(item, dict):
+
+                title = item.get(
+                    "title",
+                    ""
+                )
+
+            score = score_result(
+                query,
+                title
+            )
+
+            scored_results.append({
+                "item": item,
+                "score": score
+            })
+
+        scored_results = sorted(
+            scored_results,
+            key=lambda x: x["score"],
+            reverse=True
+        )
+
+        top_results = scored_results[:8]
+
+        print("===== RELEVANCE DEBUG =====")
+
+        for r in top_results:
+
+            print(
+                r["score"],
+                "-",
+                r["item"].get(
+                    "title",
+                    ""
+                )
+            )
+
+        print("===========================")
+
+        prices = []
+
+        for scored in top_results:
+
+            item = scored["item"]
 
             price = None
 
@@ -88,7 +206,6 @@ def calculate_price(results):
             }
 
         # FEW RESULTS
-        # use average directly
 
         if len(prices) <= 6:
 
@@ -115,7 +232,6 @@ def calculate_price(results):
             }
 
         # MANY RESULTS
-        # aggressive top trimming
 
         q1 = statistics.quantiles(
             prices,
