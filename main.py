@@ -47,9 +47,24 @@ NEGATIVE_CONTEXT = [
     "guldbarre",
     "sølvmønt",
     "samling",
-    "bestik",
-    "pokal",
     "medalje"
+]
+
+
+GENERIC_WORDS = [
+
+    "moderne",
+    "dekorativ",
+    "patineret",
+    "vintage",
+    "flot",
+    "smuk",
+    "unik",
+    "messing",
+    "metal",
+    "træ",
+    "kunst",
+    "figur"
 ]
 
 
@@ -79,6 +94,25 @@ def is_relevant_result(title):
             return False
 
     return True
+
+
+def simplify_query(query):
+
+    words = query.lower().split()
+
+    important = [
+
+        w for w in words
+
+        if w not in GENERIC_WORDS
+    ]
+
+    if not important:
+        return query
+
+    return " ".join(
+        important[:2]
+    )
 
 
 def search_dba(query):
@@ -120,8 +154,7 @@ def search_dba(query):
 
         results = []
 
-        # HARD LIMIT
-        # DBA relevance drops fast
+        # only inspect first relevant block
 
         for match in matches[:20]:
 
@@ -146,7 +179,7 @@ def search_dba(query):
             except:
                 continue
 
-            # remove unrealistic prices
+            # unrealistic
 
             if (
                 price_int < 25
@@ -155,7 +188,7 @@ def search_dba(query):
             ):
                 continue
 
-            # remove bad semantic matches
+            # semantic blacklist
 
             if not is_relevant_result(text):
                 continue
@@ -167,8 +200,7 @@ def search_dba(query):
                 "price": price_int
             })
 
-            # EARLY STOP
-            # we only need few good hits
+            # early stop
 
             if len(results) >= 8:
                 break
@@ -240,20 +272,18 @@ Avoid generic object names like:
 
 Always include:
 - style
-- material
 - shape
+- object type
 or brand/designer if known.
 
-Avoid broad collectible-related words:
-- gold
-- silver
-- vintage
+Avoid broad collectible-related wording.
 
 Good examples:
 - kartell cindy lampe
 - hay pc portable
 - beige drejelænestol
 - trææske mønster
+- vindmølle figur
 
 Bad examples:
 - lampe
@@ -264,21 +294,32 @@ Bad examples:
 
 """
 
+    image_bytes = requests.get(
+        image_url
+    ).content
+
     response = model.generate_content([
 
         prompt,
 
         {
             "mime_type": "image/jpeg",
-            "data": requests.get(image_url).content
+            "data": image_bytes
         }
 
     ])
 
     text = response.text.strip()
 
-    text = text.replace("```json", "")
-    text = text.replace("```", "")
+    text = text.replace(
+        "```json",
+        ""
+    )
+
+    text = text.replace(
+        "```",
+        ""
+    )
 
     data = json.loads(text)
 
@@ -335,9 +376,28 @@ async def analyze(request: Request):
 
             results = search_dba(query)
 
+            # fallback:
+            # broaden search automatically
+
+            if not results:
+
+                simple_query = simplify_query(
+                    query
+                )
+
+                print(
+                    "FALLBACK QUERY:",
+                    simple_query
+                )
+
+                results = search_dba(
+                    simple_query
+                )
+
             if results:
 
                 all_results = results
+
                 query_used = query
 
                 print(
