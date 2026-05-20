@@ -1,32 +1,19 @@
-import os
-import json
-import httpx
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 import google.generativeai as genai
 
-from query_engine import build_queries
+import requests
+import os
+import json
+import statistics
+import re
+
 from pricing_engine import calculate_price
-from search_engine import search_dba
-
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if GEMINI_API_KEY:
-    genai.configure(
-        api_key=GEMINI_API_KEY
-    )
-
-
-VALID_PASSWORDS = {
-    "shop456": "shop"
-}
 
 
 app = FastAPI()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,40 +24,172 @@ app.add_middleware(
 )
 
 
-class AnalyzeRequest(BaseModel):
-    image_url: str
-    password: str
+genai.configure(
+    api_key=os.getenv("GEMINI_API_KEY")
+)
 
 
-async def analyze_with_gemini(image_bytes):
+model = genai.GenerativeModel(
+    "gemini-1.5-flash"
+)
 
-    if not GEMINI_API_KEY:
-        return None
+
+NEGATIVE_CONTEXT = [
+
+    "mønt",
+    "møntsæt",
+    "krugerrand",
+    "pokemon",
+    "lego",
+    "frimærke",
+    "grillbestik",
+    "mælketænder",
+    "investering",
+    "guldbarre",
+    "sølvmønt"
+]
+
+
+@app.get("/")
+async def root():
+
+    return {
+        "status": "running"
+    }
+
+
+def clean_text(text):
+
+    if not text:
+        return ""
+
+    return str(text).lower().strip()
+
+
+def is_relevant_result(title):
+
+    title_lower = clean_text(title)
+
+    for word in NEGATIVE_CONTEXT:
+
+        if word in title_lower:
+            return False
+
+    return True
+
+
+def search_dba(query):
 
     try:
 
-        model = genai.GenerativeModel(
-            "gemini-2.5-flash"
+        print("===================")
+        print("DBA QUERY:", query)
+
+        url = "https://www.dba.dk/soeg/"
+
+        params = {
+            "soeg": query
+        }
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=20
         )
 
-        prompt = """
+        print(
+            "DBA STATUS:",
+            response.status_code
+        )
+
+        html = response.text
+
+        matches = re.findall(
+
+            r'(\d[\d\.]*)\s*kr\..{0,220}',
+
+            html,
+
+            re.IGNORECASE
+        )
+
+        results = []
+
+        for match in matches[:60]:
+
+            text = match.strip()
+
+            price_match = re.search(
+                r'(\d[\d\.]*)\s*kr',
+                text
+            )
+
+            if not price_match:
+                continue
+
+            price = price_match.group(1)
+
+            price = price.replace(".", "")
+
+            try:
+
+                price_int = int(price)
+
+            except:
+                continue
+
+            if (
+                price_int < 25
+                or
+                price_int > 50000
+            ):
+                continue
+
+            if not is_relevant_result(text):
+                continue
+
+            results.append({
+
+                "title": text,
+
+                "price": price_int
+            })
+
+        print(
+            "DBA CLEAN RESULTS:",
+            len(results)
+        )
+
+        return results
+
+    except Exception as e:
+
+        print(
+            "DBA ERROR:",
+            str(e)
+        )
+
+        return []
+
+
+async def analyze_with_gemini(image_url):
+
+    prompt = """
+
 Analyze this used item photo.
 
 Return ONLY valid JSON.
 
 {
-    "title": "...",
-    "category": "...",
-    "materials": "...",
-    "condition": "...",
-    "designer": null,
-    "brand": null,
-    "designer_confidence": "low",
-    "primary_query": "...",
-    "secondary_queries": [
-        "...",
-        "..."
-    ]
+  "title": "",
+  "category": "",
+  "materials": "",
+  "condition": "",
+  "designer": null,
+  "brand": null,
+  "designer_confidence": "low",
+  "primary_query": "",
+  "secondary_queries": []
 }
 
 Focus on Danish used marketplace search terms.
@@ -87,137 +206,116 @@ Avoid:
 - visual descriptions
 - material-heavy descriptions
 
-Maximum 3-4 search words unless exact designer/model is known.
+Never use single-word search queries.
+
+Avoid generic object names like:
+- lampe
+- stol
+- trææske
+- bord
+- skål
+
+Always include:
+- style
+- material
+- shape
+or brand/designer if known.
+
+Avoid broad collectible-related words:
+- gold
+- silver
+- vintage
 
 Good examples:
 - kartell cindy lampe
 - hay pc portable
-- montana reol
+- beige drejelænestol
+- trææske mønster
 
 Bad examples:
-- transparent rillet plast lampe
-- moderne nordisk bordlampe
-- flot designer lampe
+- lampe
+- stol
+- trææske
+- moderne designer lampe
+- transparent plast lampe
+
 """
 
-        result = model.generate_content(
-            [
-                prompt,
-                {
-                    "mime_type": "image/jpeg",
-                    "data": image_bytes
-                }
-            ]
-        )
+    response = model.generate_content([
 
-        text = result.text.strip()
+        prompt,
 
-        if text.startswith("```json"):
-            text = text.replace(
-                "```json",
-                ""
-            )
+        {
+            "mime_type": "image/jpeg",
+            "data": requests.get(image_url).content
+        }
 
-        if text.endswith("```"):
-            text = text[:-3]
+    ])
 
-        data = json.loads(
-            text.strip()
-        )
+    text = response.text.strip()
 
-        print(
-            "GEMINI:",
-            data
-        )
+    text = text.replace("```json", "")
+    text = text.replace("```", "")
 
-        return data
+    data = json.loads(text)
 
-    except Exception as e:
+    print("GEMINI:", data)
 
-        print(
-            "GEMINI ERROR:",
-            str(e)
-        )
-
-        return None
-
-
-@app.get("/")
-async def root():
-
-    return {
-        "status": "running"
-    }
+    return data
 
 
 @app.post("/analyze")
-async def analyze(request: AnalyzeRequest):
+async def analyze(request: Request):
 
     try:
 
-        role = VALID_PASSWORDS.get(
-            request.password
+        body = await request.json()
+
+        image_url = body.get(
+            "image_url"
         )
-
-        if not role:
-
-            return {
-                "error": "Unauthorized"
-            }
-
-        image_url = request.image_url
 
         if not image_url:
 
             return {
-                "error": "Missing image_url"
+                "error": "No image_url"
             }
-
-        async with httpx.AsyncClient() as client:
-
-            response = await client.get(
-                image_url,
-                timeout=30
-            )
-
-            image_bytes = response.content
 
         gemini_data = await analyze_with_gemini(
-            image_bytes
+            image_url
         )
 
-        if not gemini_data:
+        queries = []
 
-            return {
-                "error": "Gemini failed"
-            }
-
-        queries = build_queries(
-            gemini_data
+        primary_query = gemini_data.get(
+            "primary_query"
         )
 
-        print(
-            "QUERIES:",
-            queries
-        )
+        if primary_query:
+            queries.append(primary_query)
 
-        results = []
+        for q in gemini_data.get(
+            "secondary_queries",
+            []
+        ):
+
+            if q not in queries:
+                queries.append(q)
+
+        print("QUERIES:", queries)
+
+        all_results = []
+
+        query_used = None
 
         for query in queries:
 
-            print("===================")
-            print(
-                "DBA QUERY:",
-                query
-            )
+            results = search_dba(query)
 
-            dba_results = await search_dba(
-                query
-            )
+            if results:
 
-            if dba_results:
-
-                results = dba_results
+                all_results = results
+                query_used = query
 
                 print(
                     "GOOD MATCHES USING:",
@@ -226,81 +324,62 @@ async def analyze(request: AnalyzeRequest):
 
                 break
 
-        pricing_data = calculate_price(
-            results
+        pricing = calculate_price(
+            all_results,
+            query_used or ""
         )
 
         print(
             "PRICING DATA:",
-            pricing_data
+            pricing
         )
 
-        estimated_price = None
+        estimated_price = pricing.get(
+            "estimated"
+        )
 
-        if isinstance(
-            pricing_data,
-            dict
-        ):
+        if estimated_price:
 
-            estimated_price = pricing_data.get(
-                "estimated"
-            )
-
-        elif isinstance(
-            pricing_data,
-            (int, float)
-        ):
-
-            estimated_price = pricing_data
-
-        rounded_price = None
-
-        if estimated_price is not None:
-
-            rounded_price = round(
+            estimated_price = round(
                 estimated_price / 5
             ) * 5
 
-        response_data = {
+        response = {
 
-            "title": gemini_data.get(
-                "title"
-            ),
+            "title":
+                gemini_data.get("title"),
 
-            "category": gemini_data.get(
-                "category"
-            ),
+            "category":
+                gemini_data.get("category"),
 
-            "materials": gemini_data.get(
-                "materials"
-            ),
+            "materials":
+                gemini_data.get("materials"),
 
-            "condition": gemini_data.get(
-                "condition"
-            ),
+            "condition":
+                gemini_data.get("condition"),
 
-            "designer": gemini_data.get(
-                "designer"
-            ),
+            "designer":
+                gemini_data.get("designer"),
 
-            "brand": gemini_data.get(
-                "brand"
-            ),
+            "brand":
+                gemini_data.get("brand"),
 
-            "estimated_price": rounded_price,
+            "estimated_price":
+                estimated_price,
 
-            "query_used": queries[0]
-            if queries else None,
+            "query_used":
+                query_used,
 
-            "role": role
+            "role":
+                "shop"
         }
 
         print(
             "FINAL RESPONSE:",
-            response_data
+            response
         )
 
-        return response_data
+        return response
 
     except Exception as e:
 
