@@ -75,7 +75,29 @@ Return ONLY valid JSON.
 
 Focus on Danish used marketplace search terms.
 
-Avoid overly generic queries.
+Use SHORT marketplace search queries.
+
+Prefer:
+- brand names
+- designer names
+- model names
+
+Avoid:
+- aesthetic descriptions
+- visual descriptions
+- material-heavy descriptions
+
+Maximum 3-4 search words unless exact designer/model is known.
+
+Good examples:
+- kartell cindy lampe
+- hay pc portable
+- montana reol
+
+Bad examples:
+- transparent rillet plast lampe
+- moderne nordisk bordlampe
+- flot designer lampe
 """
 
         result = model.generate_content(
