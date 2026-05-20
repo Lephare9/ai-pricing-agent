@@ -134,7 +134,7 @@ def calculate_price(results):
         )
 
         upper_bound = q3 + (
-            0.7 * iqr
+            0.45 * iqr
         )
 
         trimmed = [
