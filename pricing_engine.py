@@ -87,8 +87,8 @@ def calculate_price(results):
                 "confidence": "low"
             }
 
-        # FEW RESULTS:
-        # be permissive
+        # FEW RESULTS
+        # use average directly
 
         if len(prices) <= 6:
 
@@ -114,8 +114,8 @@ def calculate_price(results):
                 "confidence": "low"
             }
 
-        # MANY RESULTS:
-        # trim extremes
+        # MANY RESULTS
+        # aggressive top trimming
 
         q1 = statistics.quantiles(
             prices,
@@ -134,7 +134,7 @@ def calculate_price(results):
         )
 
         upper_bound = q3 + (
-            1.5 * iqr
+            0.7 * iqr
         )
 
         trimmed = [
