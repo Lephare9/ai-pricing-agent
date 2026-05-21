@@ -6,9 +6,10 @@ import google.generativeai as genai
 import requests
 import os
 import json
-import re
 
 from pricing_engine import calculate_price
+from query_engine import build_queries
+from search_engine import search_dba
 
 
 app = FastAPI()
@@ -33,215 +34,12 @@ model = genai.GenerativeModel(
 )
 
 
-NEGATIVE_CONTEXT = [
-
-    "mønt",
-    "møntsæt",
-    "krugerrand",
-    "pokemon",
-    "lego",
-    "frimærke",
-    "grillbestik",
-    "mælketænder",
-    "investering",
-    "guldbarre",
-    "sølvmønt",
-    "samling",
-    "medalje"
-]
-
-
-GENERIC_WORDS = [
-
-    "moderne",
-    "dekorativ",
-    "patineret",
-    "vintage",
-    "flot",
-    "smuk",
-    "unik",
-    "messing",
-    "metal",
-    "kunst"
-]
-
-
 @app.get("/")
 async def root():
 
     return {
         "status": "running"
     }
-
-
-def clean_text(text):
-
-    if not text:
-        return ""
-
-    return str(text).lower().strip()
-
-
-def is_relevant_result(title):
-
-    title_lower = clean_text(title)
-
-    for word in NEGATIVE_CONTEXT:
-
-        if word in title_lower:
-            return False
-
-    return True
-
-
-def simplify_query(query):
-
-    words = query.lower().split()
-
-    important = [
-
-        w for w in words
-
-        if w not in GENERIC_WORDS
-    ]
-
-    if not important:
-        return query
-
-    return " ".join(
-        important[:2]
-    )
-
-
-def search_dba(query):
-
-    try:
-
-        print("===================")
-        print("DBA QUERY:", query)
-
-        url = "https://www.dba.dk/soeg/"
-
-        params = {
-            "soeg": query
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=20
-        )
-
-        print(
-            "DBA STATUS:",
-            response.status_code
-        )
-
-        html = response.text
-
-        matches = re.findall(
-
-            r'.{0,120}\d[\d\.]*\s*kr\..{0,220}',
-
-            html,
-
-            re.IGNORECASE
-        )
-
-        raw_count = len(matches)
-
-        results = []
-
-        for match in matches[:20]:
-
-            text = match.strip()
-
-            cleaned = re.sub(
-                r'<[^>]+>',
-                ' ',
-                text
-            )
-
-            cleaned = cleaned.replace(
-                "&quot;",
-                '"'
-            )
-
-            cleaned = re.sub(
-                r'\s+',
-                ' ',
-                cleaned
-            ).strip()
-
-            price_match = re.search(
-                r'(\d[\d\.]*)\s*kr',
-                cleaned
-            )
-
-            if not price_match:
-                continue
-
-            price = price_match.group(1)
-
-            price = price.replace(".", "")
-
-            try:
-
-                price_int = int(price)
-
-            except:
-                continue
-
-            if (
-                price_int < 25
-                or
-                price_int > 25000
-            ):
-                continue
-
-            if not is_relevant_result(cleaned):
-                continue
-
-            results.append({
-
-                "title": cleaned,
-
-                "price": price_int
-            })
-
-            if len(results) >= 8:
-                break
-
-        print(
-            "DBA RESULTS:",
-            raw_count
-        )
-
-        print(
-            "DBA CLEAN RESULTS:",
-            len(results)
-        )
-
-        print("===== RELEVANCE DEBUG =====")
-
-        for r in results[:5]:
-
-            print(
-                f"{r['price']} kr. {r['title'][:160]}"
-            )
-
-        print("===========================")
-
-        return results
-
-    except Exception as e:
-
-        print(
-            "DBA ERROR:",
-            str(e)
-        )
-
-        return []
 
 
 async def analyze_with_gemini(image_url):
@@ -266,44 +64,47 @@ Return ONLY valid JSON.
 
 Focus on Danish used marketplace search terms.
 
-Use SHORT marketplace search queries.
+IMPORTANT:
 
-Prefer:
-- brand names
-- designer names
-- model names
+Search queries must focus on:
+- product type
+- brand
+- designer
+- model
 
 Avoid:
-- aesthetic descriptions
-- visual descriptions
+- colors
+- aesthetic words
+- decorative words
 - material-heavy descriptions
 
-Never use single-word search queries.
+DO NOT use words like:
+- sort
+- beige
+- hvid
+- blå
+- grøn
+- flot
+- moderne
+- dekorativ
+- vintage
+- retro
+- rustik
 
-Avoid generic object names like:
-- lampe
-- stol
-- trææske
-- bord
-- skål
-
-Always include:
-- style
-- shape
-- object type
-or brand/designer if known.
+Never use single-word queries.
 
 Good examples:
+- hay pc portable lampe
 - kartell cindy lampe
-- hay pc portable
-- beige drejelænestol
-- vindmølle sparebøsse
-- messing knoplod
+- formspændt skolestol
+- rattan lænestol
+- ddsf ølkasse
 
 Bad examples:
-- lampe
-- stol
-- trææske
+- sort stol
+- beige drejestol
+- moderne lampe
+- vintage stol
 
 """
 
@@ -336,7 +137,11 @@ Bad examples:
 
     data = json.loads(text)
 
-    print("GEMINI:", data)
+    print("")
+    print("===================")
+    print("GEMINI:")
+    print(data)
+    print("===================")
 
     return data
 
@@ -362,24 +167,15 @@ async def analyze(request: Request):
             image_url
         )
 
-        queries = []
-
-        primary_query = gemini_data.get(
-            "primary_query"
+        queries = build_queries(
+            gemini_data
         )
 
-        if primary_query:
-            queries.append(primary_query)
-
-        for q in gemini_data.get(
-            "secondary_queries",
-            []
-        ):
-
-            if q not in queries:
-                queries.append(q)
-
-        print("QUERIES:", queries)
+        print("")
+        print("===================")
+        print("FINAL QUERIES:")
+        print(queries)
+        print("===================")
 
         all_results = []
 
@@ -387,33 +183,18 @@ async def analyze(request: Request):
 
         for query in queries:
 
-            results = search_dba(query)
-
-            if not results:
-
-                simple_query = simplify_query(
-                    query
-                )
-
-                print(
-                    "FALLBACK QUERY:",
-                    simple_query
-                )
-
-                results = search_dba(
-                    simple_query
-                )
+            results = await search_dba(query)
 
             if results:
 
                 all_results = results
-
                 query_used = query
 
-                print(
-                    "GOOD MATCHES USING:",
-                    query
-                )
+                print("")
+                print("===================")
+                print("GOOD MATCHES USING:")
+                print(query)
+                print("===================")
 
                 break
 
@@ -422,10 +203,11 @@ async def analyze(request: Request):
             query_used or ""
         )
 
-        print(
-            "PRICING DATA:",
-            pricing
-        )
+        print("")
+        print("===================")
+        print("PRICING DATA:")
+        print(pricing)
+        print("===================")
 
         estimated_price = pricing.get(
             "estimated"
@@ -467,19 +249,21 @@ async def analyze(request: Request):
                 "shop"
         }
 
-        print(
-            "FINAL RESPONSE:",
-            response
-        )
+        print("")
+        print("===================")
+        print("FINAL RESPONSE:")
+        print(response)
+        print("===================")
 
         return response
 
     except Exception as e:
 
-        print(
-            "ERROR:",
-            str(e)
-        )
+        print("")
+        print("===================")
+        print("ERROR:")
+        print(str(e))
+        print("===================")
 
         return {
             "error": str(e)

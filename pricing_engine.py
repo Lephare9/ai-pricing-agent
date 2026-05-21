@@ -4,14 +4,14 @@ import statistics
 
 NEGATIVE_WORDS = [
 
-    "sjælden",
-    "unik",
+    "samling",
     "collector",
-    "samler",
     "limited",
     "museum",
     "investering",
-    "ældgammel"
+    "køb trygt med dba",
+    "betalingsoversigt",
+    "alttext.dba",
 ]
 
 
@@ -52,33 +52,6 @@ def extract_price(text):
     return None
 
 
-def normalize_word(word):
-
-    word = word.lower().strip()
-
-    replacements = {
-
-        "jakker": "jakke",
-        "dunjakke": "jakke",
-        "pufferjakke": "jakke",
-        "vinterjakke": "jakke",
-
-        "lamper": "lampe",
-        "pendellampe": "lampe",
-        "bordlampe": "lampe",
-        "gulvlampe": "lampe",
-
-        "stole": "stol",
-        "barstol": "stol",
-        "lænestole": "lænestol"
-    }
-
-    return replacements.get(
-        word,
-        word
-    )
-
-
 def tokenize(text):
 
     if not text:
@@ -89,16 +62,12 @@ def tokenize(text):
         text.lower()
     )
 
-    normalized = [
+    return [
 
-        normalize_word(w)
-
-        for w in words
+        w for w in words
 
         if len(w) > 2
     ]
-
-    return normalized
 
 
 def score_result(query, title):
@@ -106,40 +75,71 @@ def score_result(query, title):
     if not title:
         return 0
 
+    title_lower = title.lower()
+
+    for negative in NEGATIVE_WORDS:
+
+        if negative in title_lower:
+            return -10
+
     query_words = tokenize(query)
 
     title_words = tokenize(title)
 
     score = 0
 
-    # exact token matches
-
-    for word in query_words:
-
-        if word in title_words:
-            score += 3
-
-    # bonus for multiple matches
-
     overlap = len(
-
         set(query_words)
         &
         set(title_words)
     )
 
-    score += overlap
+    score += overlap * 4
 
-    # penalize suspicious words
+    # exact phrase bonus
 
-    title_lower = title.lower()
-
-    for negative in NEGATIVE_WORDS:
-
-        if negative in title_lower:
-            score -= 3
+    if query.lower() in title_lower:
+        score += 6
 
     return score
+
+
+def remove_outliers(prices):
+
+    if len(prices) < 4:
+        return prices
+
+    q1 = statistics.quantiles(
+        prices,
+        n=4
+    )[0]
+
+    q3 = statistics.quantiles(
+        prices,
+        n=4
+    )[2]
+
+    iqr = q3 - q1
+
+    lower = q1 - (
+        1.5 * iqr
+    )
+
+    upper = q3 + (
+        1.0 * iqr
+    )
+
+    filtered = [
+
+        p for p in prices
+
+        if lower <= p <= upper
+    ]
+
+    if filtered:
+        return filtered
+
+    return prices
 
 
 def calculate_price(results, query=""):
@@ -150,14 +150,10 @@ def calculate_price(results, query=""):
 
         for item in results:
 
-            title = ""
-
-            if isinstance(item, dict):
-
-                title = item.get(
-                    "title",
-                    ""
-                )
+            title = item.get(
+                "title",
+                ""
+            )
 
             score = score_result(
                 query,
@@ -165,6 +161,7 @@ def calculate_price(results, query=""):
             )
 
             scored_results.append({
+
                 "item": item,
                 "score": score
             })
@@ -175,8 +172,6 @@ def calculate_price(results, query=""):
             reverse=True
         )
 
-        # keep only relevant hits
-
         top_results = [
 
             r for r in scored_results
@@ -184,17 +179,14 @@ def calculate_price(results, query=""):
             if r["score"] >= 2
         ]
 
-        # fallback
-
         if not top_results:
-
             top_results = scored_results[:5]
 
-        # limit amount
+        top_results = top_results[:8]
 
-        top_results = top_results[:6]
-
-        print("===== RELEVANCE DEBUG =====")
+        print("")
+        print("===================")
+        print("RELEVANCE DEBUG")
 
         for r in top_results:
 
@@ -204,10 +196,10 @@ def calculate_price(results, query=""):
                 r["item"].get(
                     "title",
                     ""
-                )
+                )[:160]
             )
 
-        print("===========================")
+        print("===================")
 
         prices = []
 
@@ -215,151 +207,82 @@ def calculate_price(results, query=""):
 
             item = scored["item"]
 
-            price = None
-
-            if isinstance(item, dict):
-
-                price = extract_price(
-                    item.get("price")
-                )
-
-                if not price:
-
-                    price = extract_price(
-                        item.get("title")
-                    )
-
-            else:
-
-                price = extract_price(
-                    str(item)
-                )
+            price = extract_price(
+                item.get("price")
+            )
 
             if price:
                 prices.append(price)
 
         prices = sorted(prices)
 
-        print("===== PRICING DEBUG =====")
-        print("RAW PRICES:", prices)
+        print("")
+        print("===================")
+        print("RAW PRICES:")
+        print(prices)
 
         if not prices:
 
             print("NO PRICES FOUND")
-            print("=========================")
+            print("===================")
 
             return {
+
                 "estimated": None,
                 "low": None,
                 "high": None,
                 "confidence": "low"
             }
 
-        # FEW RESULTS
-
-        if len(prices) <= 6:
-
-            estimated = round(
-                sum(prices) / len(prices)
-            )
-
-            print(
-                "FEW RESULTS MODE"
-            )
-
-            print(
-                "ESTIMATED:",
-                estimated
-            )
-
-            print("=========================")
-
-            return {
-                "estimated": estimated,
-                "low": min(prices),
-                "high": max(prices),
-                "confidence": "low"
-            }
-
-        # MANY RESULTS
-
-        q1 = statistics.quantiles(
-            prices,
-            n=4
-        )[0]
-
-        q3 = statistics.quantiles(
-            prices,
-            n=4
-        )[2]
-
-        iqr = q3 - q1
-
-        lower_bound = q1 - (
-            1.5 * iqr
+        filtered = remove_outliers(
+            prices
         )
 
-        upper_bound = q3 + (
-            0.45 * iqr
-        )
-
-        trimmed = [
-
-            p for p in prices
-
-            if (
-                p >= lower_bound
-                and
-                p <= upper_bound
-            )
-        ]
-
-        print(
-            "TRIMMED:",
-            trimmed
-        )
-
-        if not trimmed:
-
-            trimmed = prices
+        print("")
+        print("FILTERED PRICES:")
+        print(filtered)
 
         estimated = round(
             statistics.median(
-                trimmed
+                filtered
             )
         )
 
-        print(
-            "ESTIMATED:",
-            estimated
-        )
+        print("")
+        print("ESTIMATED:")
+        print(estimated)
 
-        print("=========================")
+        print("===================")
 
-        confidence = "medium"
+        confidence = "low"
 
-        if len(trimmed) >= 10:
+        if len(filtered) >= 5:
+            confidence = "medium"
+
+        if len(filtered) >= 8:
             confidence = "high"
 
         return {
 
             "estimated": estimated,
 
-            "low": min(trimmed),
+            "low": min(filtered),
 
-            "high": max(trimmed),
+            "high": max(filtered),
 
             "confidence": confidence
         }
 
     except Exception as e:
 
-        print(
-            "PRICING ERROR:",
-            str(e)
-        )
+        print("")
+        print("===================")
+        print("PRICING ERROR:")
+        print(str(e))
+        print("===================")
 
         return {
+
             "estimated": None,
             "low": None,
             "high": None,
