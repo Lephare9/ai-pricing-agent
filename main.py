@@ -1,20 +1,17 @@
 from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 import google.generativeai as genai
-
+import requests
+from bs4 import BeautifulSoup
+from statistics import median
 from PIL import Image
-
 import io
-import os
 import re
+import os
 
 app = FastAPI()
-
-# ---------------------------------------------------
-# CORS
-# ---------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,180 +21,178 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------
-# GEMINI
-# ---------------------------------------------------
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-genai.configure(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-model = genai.GenerativeModel("gemini-2.5-flash")
 
-# ---------------------------------------------------
-# ROOT
-# ---------------------------------------------------
+# FJERN FARVER FRA SØGNING
+BLACKLIST_WORDS = [
+    "grøn",
+    "grønt",
+    "blå",
+    "blåt",
+    "rød",
+    "rødt",
+    "gul",
+    "gult",
+    "sort",
+    "hvid",
+    "brun",
+    "sølv",
+    "sølvfarvet",
+    "gammel",
+    "vintage",
+    "retro"
+]
+
+
+def clean_search_query(text):
+    words = text.lower().split()
+
+    filtered = []
+
+    for w in words:
+        if w not in BLACKLIST_WORDS:
+            filtered.append(w)
+
+    return " ".join(filtered)
+
+
+def search_dba_prices(search_query):
+
+    url = f"https://www.dba.dk/soeg/?soeg={search_query}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    response = requests.get(url, headers=headers, timeout=15)
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    text = soup.get_text(" ")
+
+    matches = re.findall(r'(\d[\d\.]*)\s*kr', text)
+
+    prices = []
+
+    for m in matches:
+
+        try:
+
+            p = int(m.replace(".", ""))
+
+            if 20 <= p <= 200000:
+                prices.append(p)
+
+        except:
+            pass
+
+    return prices[:40]
+
 
 @app.get("/")
 async def root():
-    return {"status": "ok"}
 
-# ---------------------------------------------------
-# ANALYZE
-# ---------------------------------------------------
+    return {"status": "running"}
+
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(None)):
-
-    print("ANALYZE START")
-
-    if file is None:
-
-        return JSONResponse({
-            "success": False,
-            "html": """
-            <div class="error">
-                Ingen fil modtaget
-            </div>
-            """
-        })
+async def analyze(file: UploadFile = File(...)):
 
     try:
 
-        print("FILENAME:", file.filename)
-        print("CONTENT TYPE:", file.content_type)
+        contents = await file.read()
 
-        image_bytes = await file.read()
-
-        print("BYTES:", len(image_bytes))
-
-        image = Image.open(
-            io.BytesIO(image_bytes)
-        ).convert("RGB")
-
-        # ---------------------------------------------------
-        # AI ANALYSE
-        # ---------------------------------------------------
+        image = Image.open(io.BytesIO(contents))
 
         prompt = """
-        Analyser produktet på billedet.
-
-        Returner KUN dette format:
-
-        BESKRIVELSE: kort naturlig beskrivelse
-        SØGNING: korte DBA-søgeord uden farver
-        PRIS: realistisk brugtpris i Danmark
+        Beskriv varen meget kort til DBA-søgning.
 
         Regler:
-        - fjern farver i søgestreng
-        - maks 3-4 søgeord
-        - fokus på produkttype
-        - vurder realistisk DBA/brugtpris
-        - almindelige massevarer skal være billige
-        - designobjekter må være dyrere
-        - undgå vilde overdrivelser
+        - maks 4 ord
+        - ingen farver
+        - ingen vurdering
+        - ingen størrelse
+        - kun produkttype
 
-        Eksempel:
-
-        BESKRIVELSE: Grøn udskåret trææske
-        SØGNING: trææske udskåret
-        PRIS: 75-200 kr
-
-        BESKRIVELSE: Fujitsu computermus
-        SØGNING: computermus Fujitsu
-        PRIS: 50-100 kr
-
-        BESKRIVELSE: Ribbet designerlampe
-        SØGNING: ribbet lampe
-        PRIS: 1800-3500 kr
+        Eksempler:
+        "marokkansk læderpuf"
+        "kablet computermus"
+        "design væglampe"
+        "udskåret trææske"
         """
 
-        response = model.generate_content([
-            prompt,
-            image
-        ])
+        response = model.generate_content([prompt, image])
 
-        text = response.text.strip()
+        description = response.text.strip()
 
-        print("RAW AI:")
-        print(text)
-
-        description = ""
-        search_query = ""
-        price = ""
-
-        for line in text.splitlines():
-
-            line = line.strip()
-
-            if line.startswith("BESKRIVELSE:"):
-                description = line.replace(
-                    "BESKRIVELSE:",
-                    ""
-                ).strip()
-
-            elif line.startswith("SØGNING:"):
-                search_query = line.replace(
-                    "SØGNING:",
-                    ""
-                ).strip()
-
-            elif line.startswith("PRIS:"):
-                price = line.replace(
-                    "PRIS:",
-                    ""
-                ).strip()
-
-        # ---------------------------------------------------
-        # FALLBACKS
-        # ---------------------------------------------------
-
-        if not description:
-            description = "Ukendt produkt"
-
-        if not search_query:
-            search_query = description
-
-        if not price:
-            price = "100-500 kr"
+        description = clean_search_query(description)
 
         print("DESCRIPTION:", description)
-        print("SEARCH:", search_query)
-        print("PRICE:", price)
 
-        # ---------------------------------------------------
-        # HTML
-        # ---------------------------------------------------
+        prices = search_dba_prices(description)
+
+        print("DBA PRICES:", prices)
+
+        if len(prices) >= 3:
+
+            realistic_price = int(min(prices))
+
+        elif len(prices) > 0:
+
+            realistic_price = int(min(prices))
+
+        else:
+
+            realistic_price = 300
+
+        dba_link = f"https://www.dba.dk/soeg/?soeg={description}"
 
         html = f"""
         <div class="result-box">
 
             <div class="result-title">
-                {description}
+                {description.capitalize()}
             </div>
 
             <div class="result-price">
-                Pris: {price}
+                Pris: {realistic_price} kr
             </div>
+
+        </div>
+
+        <div style="text-align:center;margin-top:30px;">
+
+            <a href="{dba_link}"
+               target="_blank"
+               style="
+                    display:inline-block;
+                    background:#5b8cff;
+                    color:white;
+                    text-decoration:none;
+                    padding:22px 46px;
+                    border-radius:24px;
+                    font-size:34px;
+                    font-weight:bold;
+               ">
+               Se lignende
+            </a>
 
         </div>
         """
 
-        return JSONResponse({
-            "success": True,
-            "html": html,
-            "search_query": search_query
-        })
+        return {"html": html}
 
     except Exception as e:
 
         print("SERVER ERROR:", str(e))
 
-        return JSONResponse({
-            "success": False,
-            "html": f'''
-            <div class="error">
-                Fejl: {str(e)}
+        return {
+            "html": """
+            <div class='error'>
+                Serverfejl
             </div>
-            '''
-        })
+            """
+        }
