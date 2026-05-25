@@ -1,269 +1,171 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import HTMLResponse
 
 import google.generativeai as genai
 
-import requests
+from PIL import Image
+
+import tempfile
+import shutil
+import urllib.parse
 import os
-import json
-
-from pricing_engine import calculate_price
-from query_engine import build_queries
-from search_engine import search_dba
-
 
 app = FastAPI()
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-
 model = genai.GenerativeModel(
     "gemini-2.5-flash"
 )
 
+PROMPT = """
+Du vurderer brugtpriser i Danmark.
 
-@app.get("/")
-async def root():
+Beskriv varen kort på én linje.
 
-    return {
-        "status": "running"
-    }
+Skriv derefter:
+Pris: xxx kr
 
+Pris skal være realistisk og relativt smalt interval.
+Brug cirka ±15%.
 
-async def analyze_with_gemini(image_url):
+Undgå brede intervaller.
 
-    prompt = """
-
-Analyze this used item photo.
-
-Return ONLY valid JSON.
-
-{
-  "title": "",
-  "category": "",
-  "materials": "",
-  "condition": "",
-  "designer": null,
-  "brand": null,
-  "designer_confidence": "low",
-  "primary_query": "",
-  "secondary_queries": []
-}
-
-Focus on Danish used marketplace search terms.
-
-IMPORTANT:
-
-Search queries must focus on:
-- product type
-- brand
-- designer
-- model
-
-Avoid:
-- colors
-- aesthetic words
-- decorative words
-- material-heavy descriptions
-
-DO NOT use words like:
-- sort
-- beige
-- hvid
-- blå
-- grøn
-- flot
-- moderne
-- dekorativ
-- vintage
-- retro
-- rustik
-
-Never use single-word queries.
-
-Good examples:
-- hay pc portable lampe
-- kartell cindy lampe
-- formspændt skolestol
-- rattan lænestol
-- ddsf ølkasse
-
-Bad examples:
-- sort stol
-- beige drejestol
-- moderne lampe
-- vintage stol
-
+Returner kun svaret.
 """
 
-    image_bytes = requests.get(
-        image_url
-    ).content
+@app.get("/", response_class=HTMLResponse)
+async def root():
 
-    response = model.generate_content([
+    with open(
+        "index.html",
+        encoding="utf-8"
+    ) as f:
 
-        prompt,
-
-        {
-            "mime_type": "image/jpeg",
-            "data": image_bytes
-        }
-
-    ])
-
-    text = response.text.strip()
-
-    text = text.replace(
-        "```json",
-        ""
-    )
-
-    text = text.replace(
-        "```",
-        ""
-    )
-
-    data = json.loads(text)
-
-    print("")
-    print("===================")
-    print("GEMINI:")
-    print(data)
-    print("===================")
-
-    return data
-
+        return f.read()
 
 @app.post("/analyze")
-async def analyze(request: Request):
+async def analyze(
+
+    image1: UploadFile = File(...),
+    image2: UploadFile = File(None)
+
+):
 
     try:
 
-        body = await request.json()
+        print("")
+        print("========================")
+        print("ANALYZE CALLED")
+        print("========================")
 
-        image_url = body.get(
-            "image_url"
-        )
+        images = []
 
-        if not image_url:
+        for file in [image1, image2]:
 
-            return {
-                "error": "No image_url"
-            }
+            if not file:
+                continue
 
-        gemini_data = await analyze_with_gemini(
-            image_url
-        )
+            print("")
+            print("========================")
+            print("PROCESSING IMAGE")
+            print("========================")
 
-        queries = build_queries(
-            gemini_data
-        )
+            temp_file = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".jpg"
+            )
+
+            with open(
+                temp_file.name,
+                "wb"
+            ) as buffer:
+
+                shutil.copyfileobj(
+                    file.file,
+                    buffer
+                )
+
+            image = Image.open(
+                temp_file.name
+            )
+
+            print("ORIGINAL SIZE:", image.size)
+
+            image.thumbnail((1200,1200))
+
+            print("THUMBNAIL SIZE:", image.size)
+
+            clean_path = (
+                temp_file.name + "_clean.jpg"
+            )
+
+            image.convert("RGB").save(
+                clean_path,
+                "JPEG",
+                quality=85
+            )
+
+            final_image = Image.open(
+                clean_path
+            )
+
+            images.append(final_image)
 
         print("")
-        print("===================")
-        print("FINAL QUERIES:")
-        print(queries)
-        print("===================")
-
-        all_results = []
-
-        query_used = None
-
-        for query in queries:
-
-            results = await search_dba(query)
-
-            if results:
-
-                all_results = results
-                query_used = query
-
-                print("")
-                print("===================")
-                print("GOOD MATCHES USING:")
-                print(query)
-                print("===================")
-
-                break
-
-        pricing = calculate_price(
-            all_results,
-            query_used or ""
-        )
+        print("========================")
+        print("TOTAL IMAGES:", len(images))
+        print("========================")
 
         print("")
-        print("===================")
-        print("PRICING DATA:")
-        print(pricing)
-        print("===================")
+        print("========================")
+        print("CALLING GEMINI")
+        print("========================")
 
-        estimated_price = pricing.get(
-            "estimated"
+        response = model.generate_content(
+            [PROMPT] + images
         )
 
-        if estimated_price:
+        text = response.text.strip()
 
-            estimated_price = round(
-                estimated_price / 5
-            ) * 5
+        text = text.replace("Navn:", "")
+        text = text.replace("navn:", "")
 
-        response = {
+        text = text.strip()
 
-            "title":
-                gemini_data.get("title"),
+        print("")
+        print("========================")
+        print("GEMINI RESPONSE")
+        print("========================")
+        print(text)
 
-            "category":
-                gemini_data.get("category"),
+        first_line = (
+            text.split("\n")[0]
+        )
 
-            "materials":
-                gemini_data.get("materials"),
+        search_query = urllib.parse.quote(
+            first_line
+        )
 
-            "condition":
-                gemini_data.get("condition"),
+        dba_link = (
+            f"https://www.dba.dk/soeg/?soeg={search_query}"
+        )
 
-            "designer":
-                gemini_data.get("designer"),
-
-            "brand":
-                gemini_data.get("brand"),
-
-            "estimated_price":
-                estimated_price,
-
-            "query_used":
-                query_used,
-
-            "role":
-                "shop"
+        return {
+            "result": text,
+            "dba_link": dba_link
         }
-
-        print("")
-        print("===================")
-        print("FINAL RESPONSE:")
-        print(response)
-        print("===================")
-
-        return response
 
     except Exception as e:
 
         print("")
-        print("===================")
-        print("ERROR:")
+        print("========================")
+        print("ERROR")
+        print("========================")
         print(str(e))
-        print("===================")
+        print("")
 
         return {
             "error": str(e)
