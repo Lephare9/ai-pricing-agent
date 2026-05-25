@@ -1,17 +1,23 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import google.generativeai as genai
-import requests
-from bs4 import BeautifulSoup
-from statistics import median
+
 from PIL import Image
+
 import io
-import re
 import os
+import re
+import requests
+
+from bs4 import BeautifulSoup
 
 app = FastAPI()
+
+# ---------------------------------------------------
+# CORS
+# ---------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,15 +27,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# ---------------------------------------------------
+# GEMINI
+# ---------------------------------------------------
+
+genai.configure(
+    api_key=os.getenv("GEMINI_API_KEY")
+)
 
 model = genai.GenerativeModel("gemini-1.5-flash")
 
+# ---------------------------------------------------
+# BLACKLIST
+# ---------------------------------------------------
 
-# FJERN FARVER FRA SØGNING
-BLACKLIST_WORDS = [
+BLACKLIST = [
+
+    # farver
     "grøn",
     "grønt",
+    "grønne",
     "blå",
     "blåt",
     "rød",
@@ -39,122 +56,343 @@ BLACKLIST_WORDS = [
     "sort",
     "hvid",
     "brun",
+    "beige",
+    "orange",
+    "pink",
+    "lilla",
     "sølv",
-    "sølvfarvet",
-    "gammel",
+    "guld",
+    "grå",
+
+    # stil/fyld
     "vintage",
-    "retro"
+    "retro",
+    "moderne",
+    "klassisk",
+    "rustik",
+    "minimalistisk",
+    "skandinavisk",
+    "nordisk",
+
+    # stemning
+    "flot",
+    "smuk",
+    "unik",
+    "elegant",
+    "sjælden",
+    "dekorativ",
+    "fantastisk",
+
+    # størrelse/form
+    "stor",
+    "lille",
+    "høj",
+    "lav",
+    "bred",
+    "smal",
+    "rund",
+    "firkantet",
+
+    # lys/mørk
+    "lys",
+    "mørk",
+
+    # fyld
+    "meget",
+    "super",
+    "ekstra"
 ]
 
+# ---------------------------------------------------
+# CLEAN SEARCH
+# ---------------------------------------------------
 
-def clean_search_query(text):
-    words = text.lower().split()
+def clean_search_query(query):
 
-    filtered = []
+    words = query.split()
 
-    for w in words:
-        if w not in BLACKLIST_WORDS:
-            filtered.append(w)
+    cleaned = []
 
-    return " ".join(filtered)
+    for word in words:
 
+        w = word.lower().strip()
 
-def search_dba_prices(search_query):
+        if w not in BLACKLIST:
+            cleaned.append(word)
 
-    url = f"https://www.dba.dk/soeg/?soeg={search_query}"
+    return " ".join(cleaned)
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+# ---------------------------------------------------
+# DBA SEARCH
+# ---------------------------------------------------
 
-    response = requests.get(url, headers=headers, timeout=15)
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    text = soup.get_text(" ")
-
-    matches = re.findall(r'(\d[\d\.]*)\s*kr', text)
-
-    prices = []
-
-    for m in matches:
-
-        try:
-
-            p = int(m.replace(".", ""))
-
-            if 20 <= p <= 200000:
-                prices.append(p)
-
-        except:
-            pass
-
-    return prices[:40]
-
-
-@app.get("/")
-async def root():
-
-    return {"status": "running"}
-
-
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+def search_dba_prices(query):
 
     try:
 
-        contents = await file.read()
+        url = f"https://www.dba.dk/soeg/?soeg={query}"
 
-        image = Image.open(io.BytesIO(contents))
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=15
+        )
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        text = soup.get_text(" ")
+
+        matches = re.findall(
+            r'(\d[\d\.]*)\s*kr',
+            text
+        )
+
+        prices = []
+
+        for m in matches:
+
+            try:
+
+                p = int(
+                    m.replace(".", "")
+                )
+
+                if 20 <= p <= 200000:
+                    prices.append(p)
+
+            except:
+                pass
+
+        return prices[:40]
+
+    except Exception as e:
+
+        print("DBA ERROR:", e)
+
+        return []
+
+# ---------------------------------------------------
+# ROOT
+# ---------------------------------------------------
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+# ---------------------------------------------------
+# ANALYZE
+# ---------------------------------------------------
+
+@app.post("/analyze")
+async def analyze(file: UploadFile = File(None)):
+
+    print("ANALYZE START")
+
+    if file is None:
+
+        return JSONResponse({
+            "success": False,
+            "html": """
+            <div class='error'>
+                Ingen fil modtaget
+            </div>
+            """
+        })
+
+    try:
+
+        image_bytes = await file.read()
+
+        image = Image.open(
+            io.BytesIO(image_bytes)
+        ).convert("RGB")
+
+        # ---------------------------------------------------
+        # STRUCTURED AI OUTPUT
+        # ---------------------------------------------------
 
         prompt = """
-        Beskriv varen meget kort til DBA-søgning.
+        Analyser objektet.
+
+        Returner KUN dette format:
+
+        PRODUKT:
+        MATERIALE:
+        STIL:
+        DESIGNER:
 
         Regler:
-        - maks 4 ord
+        - korte ord
+        - ingen sætninger
         - ingen farver
-        - ingen vurdering
-        - ingen størrelse
-        - kun produkttype
+        - ingen vurderinger
+        - ingen fyldord
+        - ukendt hvis tomt
 
-        Eksempler:
-        "marokkansk læderpuf"
-        "kablet computermus"
-        "design væglampe"
-        "udskåret trææske"
+        Eksempel:
+
+        PRODUKT: lampe
+        MATERIALE: akryl
+        STIL: ribbet
+        DESIGNER: ukendt
         """
 
-        response = model.generate_content([prompt, image])
+        response = model.generate_content([
+            prompt,
+            image
+        ])
 
-        description = response.text.strip()
+        raw = response.text.strip()
 
-        description = clean_search_query(description)
+        print(raw)
 
-        print("DESCRIPTION:", description)
+        product = "produkt"
+        material = ""
+        style = ""
+        designer = ""
 
-        prices = search_dba_prices(description)
+        for line in raw.splitlines():
 
-        print("DBA PRICES:", prices)
+            line = line.strip()
 
-        if len(prices) >= 3:
+            if line.startswith("PRODUKT:"):
+                product = line.replace(
+                    "PRODUKT:",
+                    ""
+                ).strip()
 
-            realistic_price = int(min(prices))
+            elif line.startswith("MATERIALE:"):
+                material = line.replace(
+                    "MATERIALE:",
+                    ""
+                ).strip()
 
-        elif len(prices) > 0:
+            elif line.startswith("STIL:"):
+                style = line.replace(
+                    "STIL:",
+                    ""
+                ).strip()
 
-            realistic_price = int(min(prices))
+            elif line.startswith("DESIGNER:"):
+                designer = line.replace(
+                    "DESIGNER:",
+                    ""
+                ).strip()
+
+        # ---------------------------------------------------
+        # BUILD SEARCH QUERY
+        # ---------------------------------------------------
+
+        search_parts = []
+
+        if style and style != "ukendt":
+            search_parts.append(style)
+
+        if material and material != "ukendt":
+            search_parts.append(material)
+
+        search_parts.append(product)
+
+        if designer and designer != "ukendt":
+            search_parts.append(designer)
+
+        search_query = " ".join(search_parts)
+
+        search_query = clean_search_query(
+            search_query
+        )
+
+        print("SEARCH:", search_query)
+
+        # ---------------------------------------------------
+        # DBA PRICES
+        # ---------------------------------------------------
+
+        prices = search_dba_prices(
+            search_query
+        )
+
+        print("PRICES:", prices)
+
+        # ---------------------------------------------------
+        # PRICE LOGIC
+        # ---------------------------------------------------
+
+        if len(prices) > 0:
+
+            realistic_price = min(prices)
 
         else:
 
-            realistic_price = 300
+            # AI fallback
+            price_prompt = f"""
+            Produkt:
+            {search_query}
 
-        dba_link = f"https://www.dba.dk/soeg/?soeg={description}"
+            Vurder lav realistisk DBA-brugtpris i Danmark.
+
+            Returner KUN ET TAL.
+
+            Eksempel:
+            250
+            """
+
+            price_response = model.generate_content(
+                price_prompt
+            )
+
+            try:
+
+                realistic_price = int(
+                    re.findall(
+                        r'\d+',
+                        price_response.text
+                    )[0]
+                )
+
+            except:
+
+                realistic_price = 300
+
+        # ---------------------------------------------------
+        # DESCRIPTION
+        # ---------------------------------------------------
+
+        description_parts = []
+
+        if style and style != "ukendt":
+            description_parts.append(style)
+
+        if material and material != "ukendt":
+            description_parts.append(material)
+
+        description_parts.append(product)
+
+        description = " ".join(
+            description_parts
+        ).capitalize()
+
+        # ---------------------------------------------------
+        # HTML
+        # ---------------------------------------------------
+
+        dba_link = (
+            "https://www.dba.dk/soeg/?soeg="
+            + search_query
+        )
 
         html = f"""
         <div class="result-box">
 
             <div class="result-title">
-                {description.capitalize()}
+                {description}
             </div>
 
             <div class="result-price">
@@ -162,37 +400,24 @@ async def analyze(file: UploadFile = File(...)):
             </div>
 
         </div>
-
-        <div style="text-align:center;margin-top:30px;">
-
-            <a href="{dba_link}"
-               target="_blank"
-               style="
-                    display:inline-block;
-                    background:#5b8cff;
-                    color:white;
-                    text-decoration:none;
-                    padding:22px 46px;
-                    border-radius:24px;
-                    font-size:34px;
-                    font-weight:bold;
-               ">
-               Se lignende
-            </a>
-
-        </div>
         """
 
-        return {"html": html}
+        return JSONResponse({
+            "success": True,
+            "html": html,
+            "search_query": search_query,
+            "dba_link": dba_link
+        })
 
     except Exception as e:
 
         print("SERVER ERROR:", str(e))
 
-        return {
-            "html": """
+        return JSONResponse({
+            "success": False,
+            "html": f"""
             <div class='error'>
-                Serverfejl
+                Fejl: {str(e)}
             </div>
             """
-        }
+        })
