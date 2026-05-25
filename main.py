@@ -1,203 +1,280 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-import google.generativeai as genai
+<title>AI Prisagent</title>
 
-from PIL import Image
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 
-import io
-import os
-import re
+<style>
 
-app = FastAPI()
+body{
+    margin:0;
+    padding:0;
+    background:#020b1d;
+    font-family:Arial,sans-serif;
+    color:white;
+}
 
-# ---------------------------------------------------
-# CORS
-# ---------------------------------------------------
+.container{
+    max-width:700px;
+    margin:auto;
+    padding:20px;
+}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+h1{
+    text-align:center;
+    font-size:52px;
+    line-height:1.05;
+    margin-top:30px;
+    margin-bottom:20px;
+}
 
-# ---------------------------------------------------
-# GEMINI
-# ---------------------------------------------------
+.front-text{
+    text-align:center;
+    font-size:18px;
+    line-height:1.5;
+    opacity:0.92;
+    margin-bottom:30px;
+    padding:0 12px;
+}
 
-genai.configure(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+.button-center{
+    display:flex;
+    justify-content:center;
+    margin-bottom:25px;
+}
 
-model = genai.GenerativeModel("gemini-2.5-flash")
+.btn{
+    border:none;
+    background:#5b8cff;
+    color:white;
+    font-size:24px;
+    font-weight:bold;
+    border-radius:28px;
+    padding:22px 46px;
+    cursor:pointer;
+}
 
-# ---------------------------------------------------
-# ROOT
-# ---------------------------------------------------
+.preview-wrap{
+    display:flex;
+    justify-content:center;
+    margin-bottom:25px;
+}
 
-@app.get("/")
-async def root():
-    return {"status": "ok"}
+.preview{
+    width:180px;
+    height:180px;
+    object-fit:cover;
+    border-radius:22px;
+    display:none;
+}
 
-# ---------------------------------------------------
-# ANALYZE
-# ---------------------------------------------------
+.loading{
+    font-size:28px;
+    font-weight:bold;
+    text-align:center;
+    margin-top:20px;
+    animation:pulse 1s infinite;
+    display:none;
+}
 
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(None)):
+@keyframes pulse{
+    0%{opacity:0.35;}
+    50%{opacity:1;}
+    100%{opacity:0.35;}
+}
 
-    print("ANALYZE START")
+.result-box{
+    background:#08152f;
+    border-radius:30px;
+    padding:28px;
+    margin-top:30px;
+}
 
-    if file is None:
+.result-title{
+    font-size:22px;
+    line-height:1.4;
+    margin-bottom:24px;
+}
 
-        return JSONResponse({
-            "success": False,
-            "html": """
+.result-price{
+    font-size:34px;
+    font-weight:bold;
+}
+
+.similar-wrap{
+    display:flex;
+    justify-content:center;
+    margin-top:30px;
+    margin-bottom:30px;
+}
+
+.similar-btn{
+    background:#5b8cff;
+    color:white;
+    text-decoration:none;
+    padding:16px 30px;
+    border-radius:22px;
+    font-size:22px;
+    font-weight:bold;
+    display:inline-block;
+}
+
+.error{
+    color:white;
+    font-size:22px;
+    text-align:center;
+    margin-top:20px;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>AI Prisagent</h1>
+
+<div id="frontText" class="front-text">
+    Tag foto eller vælg fra arkiv og få en prisvurdering.<br><br>
+    Prisagenten estimerer brugtpris og linker til lignende varer.
+</div>
+
+<div class="button-center">
+
+    <button class="btn" onclick="openPicker()">
+        Tag foto
+    </button>
+
+</div>
+
+<!-- VIGTIGT:
+capture er fjernet
+så iPhone åbner:
+- fotobibliotek
+- tag foto
+- vælg arkiv
+-->
+
+<input
+    type="file"
+    id="imageInput"
+    accept="image/*"
+    style="display:none"
+/>
+
+<div class="preview-wrap">
+    <img id="preview" class="preview">
+</div>
+
+<div id="loading" class="loading">
+    Analyserer...
+</div>
+
+<div id="result"></div>
+
+</div>
+
+<script>
+
+const API_URL = "https://ai-pricing-agent-production.up.railway.app";
+
+const imageInput = document.getElementById("imageInput");
+const preview = document.getElementById("preview");
+const loading = document.getElementById("loading");
+const result = document.getElementById("result");
+const frontText = document.getElementById("frontText");
+
+function openPicker(){
+
+    imageInput.click();
+}
+
+imageInput.addEventListener("change", async (e) => {
+
+    const selectedFile = e.target.files[0];
+
+    if(!selectedFile){
+        return;
+    }
+
+    frontText.style.display = "none";
+
+    result.innerHTML = "";
+
+    preview.src = URL.createObjectURL(selectedFile);
+    preview.style.display = "block";
+
+    loading.style.display = "block";
+
+    try{
+
+        const formData = new FormData();
+
+        formData.append("file", selectedFile);
+
+        const response = await fetch(API_URL + "/analyze", {
+            method: "POST",
+            body: formData
+        });
+
+        const data = await response.json();
+
+        loading.style.display = "none";
+
+        if(data.html){
+
+            let searchQuery = "";
+
+            if(data.search_query){
+                searchQuery = encodeURIComponent(data.search_query);
+            }
+
+            result.innerHTML = `
+                ${data.html}
+
+                <div class="similar-wrap">
+                    <a
+                        class="similar-btn"
+                        href="https://www.dba.dk/soeg/?soeg=${searchQuery}"
+                        target="_blank"
+                    >
+                        Se lignende
+                    </a>
+                </div>
+            `;
+
+        }else{
+
+            result.innerHTML = `
+                <div class="error">
+                    Serverfejl
+                </div>
+            `;
+        }
+
+    }catch(error){
+
+        console.log(error);
+
+        loading.style.display = "none";
+
+        result.innerHTML = `
             <div class="error">
-                Ingen fil modtaget
+                Serverfejl
             </div>
-            """
-        })
+        `;
+    }
 
-    try:
+});
 
-        print("FILENAME:", file.filename)
-        print("CONTENT TYPE:", file.content_type)
+</script>
 
-        image_bytes = await file.read()
-
-        print("BYTES:", len(image_bytes))
-
-        image = Image.open(
-            io.BytesIO(image_bytes)
-        ).convert("RGB")
-
-        # ---------------------------------------------------
-        # AI ANALYSE
-        # ---------------------------------------------------
-
-        prompt = """
-        Analyser produktet på billedet.
-
-        Returner KUN dette format:
-
-        BESKRIVELSE: kort naturlig beskrivelse
-        SØGNING: korte DBA-søgeord uden farver
-        PRIS: realistisk brugtpris i Danmark
-
-        Regler:
-        - fjern farver i søgestreng
-        - maks 3-4 søgeord
-        - fokus på produkttype
-        - vurder realistisk DBA/brugtpris
-        - almindelige massevarer skal være billige
-        - designobjekter må være dyrere
-        - undgå vilde overdrivelser
-
-        Eksempel:
-
-        BESKRIVELSE: Grøn udskåret trææske
-        SØGNING: trææske udskåret
-        PRIS: 75-200 kr
-
-        BESKRIVELSE: Fujitsu computermus
-        SØGNING: computermus Fujitsu
-        PRIS: 50-100 kr
-
-        BESKRIVELSE: Ribbet designerlampe
-        SØGNING: ribbet lampe
-        PRIS: 1000 - 2000 kr
-        """
-
-        response = model.generate_content([
-            prompt,
-            image
-        ])
-
-        text = response.text.strip()
-
-        print("RAW AI:")
-        print(text)
-
-        description = ""
-        search_query = ""
-        price = ""
-
-        for line in text.splitlines():
-
-            line = line.strip()
-
-            if line.startswith("BESKRIVELSE:"):
-                description = line.replace(
-                    "BESKRIVELSE:",
-                    ""
-                ).strip()
-
-            elif line.startswith("SØGNING:"):
-                search_query = line.replace(
-                    "SØGNING:",
-                    ""
-                ).strip()
-
-            elif line.startswith("PRIS:"):
-                price = line.replace(
-                    "PRIS:",
-                    ""
-                ).strip()
-
-        # ---------------------------------------------------
-        # FALLBACKS
-        # ---------------------------------------------------
-
-        if not description:
-            description = "Ukendt produkt"
-
-        if not search_query:
-            search_query = description
-
-        if not price:
-            price = "100-500 kr"
-
-        print("DESCRIPTION:", description)
-        print("SEARCH:", search_query)
-        print("PRICE:", price)
-
-        # ---------------------------------------------------
-        # HTML
-        # ---------------------------------------------------
-
-        html = f"""
-        <div class="result-box">
-
-            <div class="result-title">
-                {description}
-            </div>
-
-            <div class="result-price">
-                Pris: {price}
-            </div>
-
-        </div>
-        """
-
-        return JSONResponse({
-            "success": True,
-            "html": html,
-            "search_query": search_query
-        })
-
-    except Exception as e:
-
-        print("SERVER ERROR:", str(e))
-
-        return JSONResponse({
-            "success": False,
-            "html": f'''
-            <div class="error">
-                Fejl: {str(e)}
-            </div>
-            '''
-        })
+</body>
+</html>
