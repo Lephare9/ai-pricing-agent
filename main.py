@@ -1,16 +1,31 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
 import google.generativeai as genai
+
 from PIL import Image
-import tempfile
+
+import io
 import os
-import urllib.parse
-import httpx
-from bs4 import BeautifulSoup
-import statistics
-import re
 
 app = FastAPI()
+
+# -----------------------------
+# CORS
+# -----------------------------
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------
+# GEMINI
+# -----------------------------
 
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
@@ -18,270 +33,135 @@ genai.configure(
 
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# ---------------------------------------------------
-# DBA SEARCH
-# ---------------------------------------------------
+# -----------------------------
+# ROOT
+# -----------------------------
 
-async def search_dba(query):
-
-    encoded = urllib.parse.quote(query)
-
-    url = f"https://www.dba.dk/soeg/?soeg={encoded}"
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0 Safari/537.36"
-        )
-    }
-
-    try:
-
-        async with httpx.AsyncClient(timeout=20) as client:
-
-            response = await client.get(
-                url,
-                headers=headers,
-                follow_redirects=True
-            )
-
-        html = response.text
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        text = soup.get_text(" ", strip=True)
-
-        matches = re.findall(
-            r'(\d{2,6})\s?kr',
-            text,
-            re.IGNORECASE
-        )
-
-        prices = []
-
-        for m in matches:
-
-            try:
-
-                price = int(m)
-
-                if 50 <= price <= 100000:
-                    prices.append(price)
-
-            except:
-                pass
-
-        prices = list(set(prices))
-
-        prices.sort()
-
-        return prices[:50], url
-
-    except Exception as e:
-
-        print("DBA ERROR:", e)
-
-        return [], url
-
-
-# ---------------------------------------------------
-# PRICE ESTIMATION
-# ---------------------------------------------------
-
-def estimate_price(prices, description):
-
-    if not prices:
-        return "Ukendt"
-
-    median = statistics.median(prices)
-
-    low = int(median * 0.85)
-    high = int(median * 1.15)
-
-    text = description.lower()
-
-    design_words = [
-        "designer",
-        "design",
-        "ikonisk",
-        "ph",
-        "louis poulsen",
-        "verner panton",
-        "kartell",
-        "flos"
-    ]
-
-    is_design = any(
-        word in text
-        for word in design_words
-    )
-
-    # Only upscale real design items
-    if is_design and median < 1500:
-
-        low = int(median * 1.8)
-        high = int(median * 2.8)
-
-    return f"{low}-{high} kr"
-
-
-# ---------------------------------------------------
-# FRONTEND
-# ---------------------------------------------------
-
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
+    return {"status": "ok"}
 
-    with open(
-        "index.html",
-        encoding="utf-8"
-    ) as f:
-
-        return f.read()
-
-
-# ---------------------------------------------------
+# -----------------------------
 # ANALYZE
-# ---------------------------------------------------
+# -----------------------------
 
 @app.post("/analyze")
-async def analyze(
-    image: UploadFile = File(...)
-):
+async def analyze(file: UploadFile = File(None)):
 
-    temp_path = None
-    jpeg_path = None
+    print("ANALYZE START")
+
+    # undgå 422
+    if file is None:
+
+        print("NO FILE")
+
+        return JSONResponse({
+            "success": False,
+            "html": """
+            <div class="error">
+                Ingen fil modtaget
+            </div>
+            """
+        })
 
     try:
 
-        print("ANALYZE START")
+        print("FILENAME:", file.filename)
+        print("CONTENT TYPE:", file.content_type)
 
-        suffix = os.path.splitext(
-            image.filename
-        )[1]
+        image_bytes = await file.read()
 
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=suffix
-        ) as tmp:
+        print("BYTES:", len(image_bytes))
 
-            content = await image.read()
+        # pil image
+        image = Image.open(
+            io.BytesIO(image_bytes)
+        ).convert("RGB")
 
-            tmp.write(content)
+        # ai analyse
+        response = model.generate_content([
+            """
+            Beskriv produktet meget kort på dansk.
 
-            temp_path = tmp.name
+            Regler:
+            - kun produkttype
+            - maks 4 ord
+            - ingen lange beskrivelser
+            - ingen sætninger
 
-        # ---------------------------------------------------
-        # FORCE CONVERT EVERYTHING TO REAL JPEG
-        # Fixes iPhone HEIC / MPO / Safari uploads
-        # ---------------------------------------------------
-
-        img = Image.open(temp_path)
-
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        jpeg_path = temp_path + ".jpg"
-
-        img.save(
-            jpeg_path,
-            "JPEG",
-            quality=90
-        )
-
-        img = Image.open(jpeg_path)
-
-        # ---------------------------------------------------
-        # AI ANALYSIS
-        # ---------------------------------------------------
-
-        prompt = """
-Beskriv varen meget kort og præcist.
-
-Regler:
-- max 5 ord
-- kun produkttype + materiale/stil
-- ingen lange sætninger
-- ingen fyldord
-
-Eksempler:
-Traditionel marokkansk læderpuf
-PH bordlampe
-Vintage teak kommode
-Design væglampe i metal
-"""
-
-        response = model.generate_content(
-            [prompt, img]
-        )
+            Eksempler:
+            Marokkansk læderpuf
+            Ribbet akryl pendel
+            Designer glaslampe
+            """,
+            image
+        ])
 
         description = response.text.strip()
 
         print("DESCRIPTION:", description)
 
-        # ---------------------------------------------------
-        # SEARCH DBA
-        # ---------------------------------------------------
+        desc = description.lower()
 
-        prices, dba_url = await search_dba(
-            description
-        )
+        # -----------------------------
+        # PRISLOGIK
+        # -----------------------------
 
-        print("DBA PRICES:", prices[:10])
+        low_price = 300
+        high_price = 900
 
-        estimated = estimate_price(
-            prices,
-            description
-        )
+        # puf
+        if "puf" in desc:
 
-        # ---------------------------------------------------
-        # RESULT HTML
-        # ---------------------------------------------------
+            low_price = 300
+            high_price = 600
 
-        result = f"""
-<div class="result-card">
+        # lampe design
+        elif (
+            "lampe" in desc
+            or "pendel" in desc
+            or "akryl" in desc
+            or "ribbet" in desc
+            or "designer" in desc
+        ):
 
-<div class="result-text">
-{description}<br><br>
-Pris: {estimated}
-</div>
+            low_price = 1500
+            high_price = 4500
 
-<a
-href="{dba_url}"
-target="_blank"
-class="link-btn"
->
-Se lignende
-</a>
+        # -----------------------------
+        # HTML
+        # -----------------------------
 
-</div>
-"""
+        html = f"""
+        <div class="result-box">
 
-        # ---------------------------------------------------
-        # CLEANUP
-        # ---------------------------------------------------
+            <div class="result-title">
+                {description}
+            </div>
 
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+            <div class="result-price">
+                Pris: {low_price}-{high_price} kr
+            </div>
 
-        if jpeg_path and os.path.exists(jpeg_path):
-            os.remove(jpeg_path)
+        </div>
+        """
 
-        return {
-            "result": result
-        }
+        print("SUCCESS")
+
+        return JSONResponse({
+            "success": True,
+            "html": html
+        })
 
     except Exception as e:
 
         print("SERVER ERROR:", str(e))
 
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
-        if jpeg_path and os.path.exists(jpeg_path):
-            os.remove(jpeg_path)
-
-        return {
-            "result": f"Fejl: {str(e)}"
-        }
+        return JSONResponse({
+            "success": False,
+            "html": f'''
+            <div class="error">
+                Fejl: {str(e)}
+            </div>
+            '''
+        })
