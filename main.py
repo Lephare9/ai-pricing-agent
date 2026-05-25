@@ -6,6 +6,8 @@ import google.generativeai as genai
 
 from PIL import Image
 
+from statistics import median
+
 import io
 import os
 import re
@@ -28,14 +30,16 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------
-# GEMINI
+# GEMINI 2.5 FLASH
 # ---------------------------------------------------
 
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-model = genai.GenerativeModel("gemini-2.5-flash")
+model = genai.GenerativeModel(
+    "gemini-2.5-flash"
+)
 
 # ---------------------------------------------------
 # BLACKLIST
@@ -164,6 +168,7 @@ def search_dba_prices(query):
                     m.replace(".", "")
                 )
 
+                # realistiske priser
                 if 20 <= p <= 200000:
                     prices.append(p)
 
@@ -322,21 +327,31 @@ async def analyze(file: UploadFile = File(None)):
         print("PRICES:", prices)
 
         # ---------------------------------------------------
-        # PRICE LOGIC
+        # SMART PRICE LOGIC
         # ---------------------------------------------------
 
         if len(prices) > 0:
 
-            realistic_price = min(prices)
+            prices = sorted(prices)
+
+            # fjern ekstreme outliers
+            trim = int(len(prices) * 0.2)
+
+            if len(prices) > 5:
+                prices = prices[trim:-trim]
+
+            realistic_price = int(
+                median(prices)
+            )
 
         else:
 
-            # AI fallback
+            # AI fallback hvis ingen DBA hits
             price_prompt = f"""
             Produkt:
             {search_query}
 
-            Vurder lav realistisk DBA-brugtpris i Danmark.
+            Vurder realistisk lav DBA-brugtpris i Danmark.
 
             Returner KUN ET TAL.
 
