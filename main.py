@@ -104,7 +104,42 @@ BLACKLIST = [
     # fyld
     "meget",
     "super",
-    "ekstra"
+    "ekstra",
+
+    # støjord
+    "voks"
+]
+
+# ---------------------------------------------------
+# GOOD MATERIALS
+# ---------------------------------------------------
+
+GOOD_MATERIALS = [
+    "kobber",
+    "messing",
+    "teak",
+    "eg",
+    "læder",
+    "glas",
+    "keramik",
+    "marmor",
+    "akryl",
+    "stål",
+    "metal",
+    "træ",
+    "denim"
+]
+
+# ---------------------------------------------------
+# GOOD STYLES
+# ---------------------------------------------------
+
+GOOD_STYLES = [
+    "ribbet",
+    "marokkansk",
+    "industriel",
+    "antik",
+    "retro"
 ]
 
 # ---------------------------------------------------
@@ -168,7 +203,6 @@ def search_dba_prices(query):
                     m.replace(".", "")
                 )
 
-                # realistiske priser
                 if 20 <= p <= 200000:
                     prices.append(p)
 
@@ -220,7 +254,7 @@ async def analyze(file: UploadFile = File(None)):
         ).convert("RGB")
 
         # ---------------------------------------------------
-        # STRUCTURED AI OUTPUT
+        # AI STRUCTURED OUTPUT
         # ---------------------------------------------------
 
         prompt = """
@@ -297,16 +331,23 @@ async def analyze(file: UploadFile = File(None)):
 
         search_parts = []
 
-        if style and style != "ukendt":
-            search_parts.append(style)
+        # designer først
+        if designer and designer.lower() != "ukendt":
+            search_parts.append(designer)
 
-        if material and material != "ukendt":
+        # godt materiale
+        if material and material.lower() in GOOD_MATERIALS:
             search_parts.append(material)
 
+        # stærk stil
+        elif style and style.lower() in GOOD_STYLES:
+            search_parts.append(style)
+
+        # altid produkt
         search_parts.append(product)
 
-        if designer and designer != "ukendt":
-            search_parts.append(designer)
+        # max 3 ord
+        search_parts = search_parts[:3]
 
         search_query = " ".join(search_parts)
 
@@ -334,7 +375,6 @@ async def analyze(file: UploadFile = File(None)):
 
             prices = sorted(prices)
 
-            # fjern ekstreme outliers
             trim = int(len(prices) * 0.2)
 
             if len(prices) > 5:
@@ -346,12 +386,12 @@ async def analyze(file: UploadFile = File(None)):
 
         else:
 
-            # AI fallback hvis ingen DBA hits
+            # AI fallback
             price_prompt = f"""
             Produkt:
             {search_query}
 
-            Vurder realistisk lav DBA-brugtpris i Danmark.
+            Vurder realistisk DBA-brugtpris i Danmark.
 
             Returner KUN ET TAL.
 
@@ -395,13 +435,17 @@ async def analyze(file: UploadFile = File(None)):
         ).capitalize()
 
         # ---------------------------------------------------
-        # HTML
+        # DBA LINK
         # ---------------------------------------------------
 
         dba_link = (
             "https://www.dba.dk/soeg/?soeg="
             + search_query
         )
+
+        # ---------------------------------------------------
+        # HTML
+        # ---------------------------------------------------
 
         html = f"""
         <div class="result-box">
