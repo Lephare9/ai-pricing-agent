@@ -1,37 +1,53 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 import google.generativeai as genai
 
 from PIL import Image
-
 import tempfile
 import shutil
-import urllib.parse
 import os
+import urllib.parse
 
 app = FastAPI()
 
+# CORS FIX
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# GEMINI API KEY FRA RAILWAY VARIABLES
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-model = genai.GenerativeModel(
-    "gemini-1.5-flash"
-)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 PROMPT = """
 Du vurderer brugtpriser i Danmark.
 
-Beskriv varen kort på én linje.
+Analyser billederne og vurder hvad produktet er.
 
-Skriv derefter:
-Pris: xxx kr
+Svar KUN i dette format:
 
-Pris skal være realistisk og relativt smalt interval.
-Brug cirka ±15%.
+Beskrivelse: xxx
 
-Undgå brede intervaller.
+Pris: xxx-xxx kr
+
+Kort og præcist.
+
+Undgå brede prisintervaller.
+Brug realistisk dansk brugtpris.
+
+Hvis muligt:
+- nævn materiale
+- stil/design
+- type møbel/objekt
 
 Returner kun svaret.
 """
@@ -46,20 +62,19 @@ async def root():
 
         return f.read()
 
+
 @app.post("/analyze")
 async def analyze(
-
     image1: UploadFile = File(...),
     image2: UploadFile = File(None)
-
 ):
 
     try:
 
         print("")
-        print("========================")
+        print("================================")
         print("ANALYZE CALLED")
-        print("========================")
+        print("================================")
 
         images = []
 
@@ -68,105 +83,74 @@ async def analyze(
             if not file:
                 continue
 
-            print("")
-            print("========================")
-            print("PROCESSING IMAGE")
-            print("========================")
+            print(f"Processing: {file.filename}")
 
-            temp_file = tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=".jpg"
-            )
-
-            with open(
-                temp_file.name,
-                "wb"
-            ) as buffer:
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
 
                 shutil.copyfileobj(
                     file.file,
-                    buffer
+                    temp_file
                 )
 
-            image = Image.open(
-                temp_file.name
-            )
+                image_path = temp_file.name
 
-            print("ORIGINAL SIZE:", image.size)
+            image = Image.open(image_path)
 
-            image.thumbnail((1200,1200))
+            # KONVERTER TIL RGB
+            if image.mode != "RGB":
+                image = image.convert("RGB")
 
-            print("THUMBNAIL SIZE:", image.size)
+            # SKALERING
+            max_size = 1200
 
-            clean_path = (
-                temp_file.name + "_clean.jpg"
-            )
+            image.thumbnail((max_size, max_size))
 
-            image.convert("RGB").save(
-                clean_path,
-                "JPEG",
-                quality=85
-            )
+            images.append(image)
 
-            final_image = Image.open(
-                clean_path
-            )
+            print(f"Image resized: {image.size}")
 
-            images.append(final_image)
-
-        print("")
-        print("========================")
-        print("TOTAL IMAGES:", len(images))
-        print("========================")
-
-        print("")
-        print("========================")
-        print("CALLING GEMINI")
-        print("========================")
+        print("Sending to Gemini...")
 
         response = model.generate_content(
             [PROMPT] + images
         )
 
-        text = response.text.strip()
+        result = response.text.strip()
 
-        text = text.replace("Navn:", "")
-        text = text.replace("navn:", "")
+        print("Gemini response received")
+        print(result)
 
-        text = text.strip()
+        # DBA LINK
+        first_line = result.split("\n")[0]
 
-        print("")
-        print("========================")
-        print("GEMINI RESPONSE")
-        print("========================")
-        print(text)
-
-        first_line = (
-            text.split("\n")[0]
-        )
-
-        search_query = urllib.parse.quote(
+        search_text = (
             first_line
+            .replace("Beskrivelse:", "")
+            .strip()
         )
+
+        encoded_search = urllib.parse.quote(search_text)
 
         dba_link = (
-            f"https://www.dba.dk/soeg/?soeg={search_query}"
+            f"https://www.dba.dk/soeg/?soeg={encoded_search}"
         )
 
         return {
-            "result": text,
+            "result": result,
             "dba_link": dba_link
         }
 
     except Exception as e:
 
         print("")
-        print("========================")
-        print("ERROR")
-        print("========================")
+        print("================================")
+        print("SERVER ERROR")
+        print("================================")
         print(str(e))
-        print("")
 
-        return {
-            "error": str(e)
-        }
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            }
+        )
