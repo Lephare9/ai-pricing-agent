@@ -8,12 +8,13 @@ from PIL import Image
 
 import io
 import os
+import re
 
 app = FastAPI()
 
-# -----------------------------
+# ---------------------------------------------------
 # CORS
-# -----------------------------
+# ---------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,9 +24,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
+# ---------------------------------------------------
 # GEMINI
-# -----------------------------
+# ---------------------------------------------------
 
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
@@ -33,27 +34,24 @@ genai.configure(
 
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# -----------------------------
+# ---------------------------------------------------
 # ROOT
-# -----------------------------
+# ---------------------------------------------------
 
 @app.get("/")
 async def root():
     return {"status": "ok"}
 
-# -----------------------------
+# ---------------------------------------------------
 # ANALYZE
-# -----------------------------
+# ---------------------------------------------------
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(None)):
 
     print("ANALYZE START")
 
-    # undgå 422
     if file is None:
-
-        print("NO FILE")
 
         return JSONResponse({
             "success": False,
@@ -73,64 +71,103 @@ async def analyze(file: UploadFile = File(None)):
 
         print("BYTES:", len(image_bytes))
 
-        # pil image
         image = Image.open(
             io.BytesIO(image_bytes)
         ).convert("RGB")
 
-        # ai analyse
+        # ---------------------------------------------------
+        # AI ANALYSE
+        # ---------------------------------------------------
+
+        prompt = """
+        Analyser produktet på billedet.
+
+        Returner KUN dette format:
+
+        BESKRIVELSE: kort naturlig beskrivelse
+        SØGNING: korte DBA-søgeord uden farver
+        PRIS: realistisk brugtpris i Danmark
+
+        Regler:
+        - fjern farver i søgestreng
+        - maks 3-4 søgeord
+        - fokus på produkttype
+        - vurder realistisk DBA/brugtpris
+        - almindelige massevarer skal være billige
+        - designobjekter må være dyrere
+        - undgå vilde overdrivelser
+
+        Eksempel:
+
+        BESKRIVELSE: Grøn udskåret trææske
+        SØGNING: trææske udskåret
+        PRIS: 75-200 kr
+
+        BESKRIVELSE: Fujitsu computermus
+        SØGNING: computermus Fujitsu
+        PRIS: 50-100 kr
+
+        BESKRIVELSE: Ribbet designerlampe
+        SØGNING: ribbet lampe
+        PRIS: 1000 - 2000 kr
+        """
+
         response = model.generate_content([
-            """
-            Beskriv produktet meget kort på dansk.
-
-            Regler:
-            - kun produkttype
-            - maks 4 ord
-            - ingen lange beskrivelser
-            - ingen sætninger
-
-            Eksempler:
-            Marokkansk læderpuf
-            Ribbet akryl pendel
-            Designer glaslampe
-            """,
+            prompt,
             image
         ])
 
-        description = response.text.strip()
+        text = response.text.strip()
+
+        print("RAW AI:")
+        print(text)
+
+        description = ""
+        search_query = ""
+        price = ""
+
+        for line in text.splitlines():
+
+            line = line.strip()
+
+            if line.startswith("BESKRIVELSE:"):
+                description = line.replace(
+                    "BESKRIVELSE:",
+                    ""
+                ).strip()
+
+            elif line.startswith("SØGNING:"):
+                search_query = line.replace(
+                    "SØGNING:",
+                    ""
+                ).strip()
+
+            elif line.startswith("PRIS:"):
+                price = line.replace(
+                    "PRIS:",
+                    ""
+                ).strip()
+
+        # ---------------------------------------------------
+        # FALLBACKS
+        # ---------------------------------------------------
+
+        if not description:
+            description = "Ukendt produkt"
+
+        if not search_query:
+            search_query = description
+
+        if not price:
+            price = "100-500 kr"
 
         print("DESCRIPTION:", description)
+        print("SEARCH:", search_query)
+        print("PRICE:", price)
 
-        desc = description.lower()
-
-        # -----------------------------
-        # PRISLOGIK
-        # -----------------------------
-
-        low_price = 300
-        high_price = 900
-
-        # puf
-        if "puf" in desc:
-
-            low_price = 300
-            high_price = 600
-
-        # lampe design
-        elif (
-            "lampe" in desc
-            or "pendel" in desc
-            or "akryl" in desc
-            or "ribbet" in desc
-            or "designer" in desc
-        ):
-
-            low_price = 1500
-            high_price = 4500
-
-        # -----------------------------
+        # ---------------------------------------------------
         # HTML
-        # -----------------------------
+        # ---------------------------------------------------
 
         html = f"""
         <div class="result-box">
@@ -140,17 +177,16 @@ async def analyze(file: UploadFile = File(None)):
             </div>
 
             <div class="result-price">
-                Pris: {low_price}-{high_price} kr
+                Pris: {price}
             </div>
 
         </div>
         """
 
-        print("SUCCESS")
-
         return JSONResponse({
             "success": True,
-            "html": html
+            "html": html,
+            "search_query": search_query
         })
 
     except Exception as e:
