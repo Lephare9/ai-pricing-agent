@@ -1,138 +1,206 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi.responses import HTMLResponse
 import google.generativeai as genai
-
 from PIL import Image
-import io
+import tempfile
 import os
-import re
 import urllib.parse
+import httpx
+from bs4 import BeautifulSoup
+import statistics
 
 app = FastAPI()
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# GEMINI KEY
 genai.configure(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-# MODEL
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-PROMPT = """
-Du er en dansk prisagent.
+# ---------------------------------------------------
+# DBA SEARCH
+# ---------------------------------------------------
 
-Analyser billedet og vurder hvad varen er.
+async def search_dba(query):
 
-Svar KUN i dette format:
+    encoded = urllib.parse.quote(query)
 
-Produktbeskrivelse
+    url = f"https://www.dba.dk/soeg/?soeg={encoded}"
 
-Pris: xxx-xxx kr
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        )
+    }
 
-Regler:
-- Kort præcis beskrivelse
-- Ingen "Navn:"
-- Ingen ekstra tekst
-- Smalt realistisk prisinterval
-- Typisk cirka 15%
-"""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+
+            response = await client.get(
+                url,
+                headers=headers,
+                follow_redirects=True
+            )
+
+        html = response.text
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        prices = []
+
+        text = soup.get_text(" ", strip=True)
+
+        import re
+
+        matches = re.findall(r'(\d{2,6})\s?kr', text)
+
+        for m in matches:
+
+            try:
+                price = int(m)
+
+                if 50 <= price <= 100000:
+                    prices.append(price)
+
+            except:
+                pass
+
+        prices = list(set(prices))
+
+        prices.sort()
+
+        return prices[:40], url
+
+    except Exception as e:
+        print("DBA ERROR:", e)
+        return [], url
+
+
+# ---------------------------------------------------
+# PRICE ESTIMATION
+# ---------------------------------------------------
+
+def estimate_price(prices, ai_text):
+
+    if not prices:
+        return "Ukendt"
+
+    median = statistics.median(prices)
+
+    low = int(median * 0.85)
+    high = int(median * 1.15)
+
+    text = ai_text.lower()
+
+    design_words = [
+        "designer",
+        "design",
+        "ikonisk",
+        "ph",
+        "louis poulsen",
+        "verner panton",
+        "kartell",
+        "flos"
+    ]
+
+    is_design = any(word in text for word in design_words)
+
+    if is_design and median < 1200:
+        low = int(median * 1.8)
+        high = int(median * 2.8)
+
+    return f"{low}-{high} kr"
+
+
+# ---------------------------------------------------
+# FRONTEND
+# ---------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
+
     with open("index.html", encoding="utf-8") as f:
         return f.read()
 
 
+# ---------------------------------------------------
+# ANALYZE
+# ---------------------------------------------------
+
 @app.post("/analyze")
 async def analyze(
-    image1: UploadFile = File(...),
-    image2: UploadFile = File(None)
+    image: UploadFile = File(...)
 ):
 
     try:
 
-        images = []
+        suffix = os.path.splitext(image.filename)[1]
 
-        for file in [image1, image2]:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
 
-            if not file:
-                continue
+            content = await image.read()
 
-            contents = await file.read()
+            tmp.write(content)
 
-            # ÅBN BILLEDE
-            img = Image.open(io.BytesIO(contents))
+            temp_path = tmp.name
 
-            # FIX MPO / HEIC / RGBA
-            if img.mode != "RGB":
-                img = img.convert("RGB")
+        img = Image.open(temp_path)
 
-            # SKALER NED
-            img.thumbnail((1600, 1600))
+        prompt = """
+Beskriv varen kort og præcist.
 
-            # GEM SOM JPEG
-            temp_buffer = io.BytesIO()
+Regler:
+- max 5 ord
+- meget konkret
+- ingen lange beskrivelser
+- kun type + materiale/stil hvis relevant
 
-            img.save(
-                temp_buffer,
-                format="JPEG",
-                quality=85
-            )
+Eksempler:
+Traditionel marokkansk læderpuf
+Design væglampe i metal
+PH bordlampe
+Vintage teak kommode
+"""
 
-            jpeg_bytes = temp_buffer.getvalue()
+        response = model.generate_content([prompt, img])
 
-            images.append({
-                "mime_type": "image/jpeg",
-                "data": jpeg_bytes
-            })
+        description = response.text.strip()
 
-        # GEMINI REQUEST
-        response = model.generate_content(
-            [PROMPT] + images
-        )
+        prices, dba_url = await search_dba(description)
 
-        result_text = response.text.strip()
+        estimated = estimate_price(prices, description)
 
-        # DBA LINK
-        first_line = result_text.split("\n")[0]
-        search_query = urllib.parse.quote(first_line)
+        result = f"""
+<div class="result-card">
 
-        dba_link = f"https://www.dba.dk/soeg/?soeg={search_query}"
+<div class="result-text">
+{description}<br><br>
+Pris: {estimated}
+</div>
 
-        return JSONResponse({
-            "result": result_text,
-            "dba_link": dba_link
-        })
+<a
+href="{dba_url}"
+target="_blank"
+class="link-btn"
+>
+Se lignende
+</a>
+
+</div>
+"""
+
+        os.remove(temp_path)
+
+        return {
+            "result": result
+        }
 
     except Exception as e:
 
-        print("ERROR:", str(e))
+        print("SERVER ERROR:", str(e))
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(e)
-            }
-        )
-
-
-if __name__ == "__main__":
-
-    import uvicorn
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000))
-    )
+        return {
+            "result": f"Fejl: {str(e)}"
+        }
