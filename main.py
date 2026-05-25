@@ -8,6 +8,7 @@ import urllib.parse
 import httpx
 from bs4 import BeautifulSoup
 import statistics
+import re
 
 app = FastAPI()
 
@@ -36,7 +37,8 @@ async def search_dba(query):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+
+        async with httpx.AsyncClient(timeout=20) as client:
 
             response = await client.get(
                 url,
@@ -48,17 +50,20 @@ async def search_dba(query):
 
         soup = BeautifulSoup(html, "html.parser")
 
-        prices = []
-
         text = soup.get_text(" ", strip=True)
 
-        import re
+        matches = re.findall(
+            r'(\d{2,6})\s?kr',
+            text,
+            re.IGNORECASE
+        )
 
-        matches = re.findall(r'(\d{2,6})\s?kr', text)
+        prices = []
 
         for m in matches:
 
             try:
+
                 price = int(m)
 
                 if 50 <= price <= 100000:
@@ -71,10 +76,12 @@ async def search_dba(query):
 
         prices.sort()
 
-        return prices[:40], url
+        return prices[:50], url
 
     except Exception as e:
+
         print("DBA ERROR:", e)
+
         return [], url
 
 
@@ -82,7 +89,7 @@ async def search_dba(query):
 # PRICE ESTIMATION
 # ---------------------------------------------------
 
-def estimate_price(prices, ai_text):
+def estimate_price(prices, description):
 
     if not prices:
         return "Ukendt"
@@ -92,7 +99,7 @@ def estimate_price(prices, ai_text):
     low = int(median * 0.85)
     high = int(median * 1.15)
 
-    text = ai_text.lower()
+    text = description.lower()
 
     design_words = [
         "designer",
@@ -105,9 +112,14 @@ def estimate_price(prices, ai_text):
         "flos"
     ]
 
-    is_design = any(word in text for word in design_words)
+    is_design = any(
+        word in text
+        for word in design_words
+    )
 
-    if is_design and median < 1200:
+    # Only upscale real design items
+    if is_design and median < 1500:
+
         low = int(median * 1.8)
         high = int(median * 2.8)
 
@@ -121,7 +133,11 @@ def estimate_price(prices, ai_text):
 @app.get("/", response_class=HTMLResponse)
 async def root():
 
-    with open("index.html", encoding="utf-8") as f:
+    with open(
+        "index.html",
+        encoding="utf-8"
+    ) as f:
+
         return f.read()
 
 
@@ -134,11 +150,21 @@ async def analyze(
     image: UploadFile = File(...)
 ):
 
+    temp_path = None
+    jpeg_path = None
+
     try:
 
-        suffix = os.path.splitext(image.filename)[1]
+        print("ANALYZE START")
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        suffix = os.path.splitext(
+            image.filename
+        )[1]
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as tmp:
 
             content = await image.read()
 
@@ -146,31 +172,72 @@ async def analyze(
 
             temp_path = tmp.name
 
+        # ---------------------------------------------------
+        # FORCE CONVERT EVERYTHING TO REAL JPEG
+        # Fixes iPhone HEIC / MPO / Safari uploads
+        # ---------------------------------------------------
+
         img = Image.open(temp_path)
 
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        jpeg_path = temp_path + ".jpg"
+
+        img.save(
+            jpeg_path,
+            "JPEG",
+            quality=90
+        )
+
+        img = Image.open(jpeg_path)
+
+        # ---------------------------------------------------
+        # AI ANALYSIS
+        # ---------------------------------------------------
+
         prompt = """
-Beskriv varen kort og præcist.
+Beskriv varen meget kort og præcist.
 
 Regler:
 - max 5 ord
-- meget konkret
-- ingen lange beskrivelser
-- kun type + materiale/stil hvis relevant
+- kun produkttype + materiale/stil
+- ingen lange sætninger
+- ingen fyldord
 
 Eksempler:
 Traditionel marokkansk læderpuf
-Design væglampe i metal
 PH bordlampe
 Vintage teak kommode
+Design væglampe i metal
 """
 
-        response = model.generate_content([prompt, img])
+        response = model.generate_content(
+            [prompt, img]
+        )
 
         description = response.text.strip()
 
-        prices, dba_url = await search_dba(description)
+        print("DESCRIPTION:", description)
 
-        estimated = estimate_price(prices, description)
+        # ---------------------------------------------------
+        # SEARCH DBA
+        # ---------------------------------------------------
+
+        prices, dba_url = await search_dba(
+            description
+        )
+
+        print("DBA PRICES:", prices[:10])
+
+        estimated = estimate_price(
+            prices,
+            description
+        )
+
+        # ---------------------------------------------------
+        # RESULT HTML
+        # ---------------------------------------------------
 
         result = f"""
 <div class="result-card">
@@ -191,7 +258,15 @@ Se lignende
 </div>
 """
 
-        os.remove(temp_path)
+        # ---------------------------------------------------
+        # CLEANUP
+        # ---------------------------------------------------
+
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        if jpeg_path and os.path.exists(jpeg_path):
+            os.remove(jpeg_path)
 
         return {
             "result": result
@@ -200,6 +275,12 @@ Se lignende
     except Exception as e:
 
         print("SERVER ERROR:", str(e))
+
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        if jpeg_path and os.path.exists(jpeg_path):
+            os.remove(jpeg_path)
 
         return {
             "result": f"Fejl: {str(e)}"
